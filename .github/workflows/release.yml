@@ -430,10 +430,6 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Use that Python for every uv call
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
       - name: Set up uv
         uses: astral-sh/setup-uv@v10.3.0
         with:
@@ -441,9 +437,11 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install the full app runtime
-        # --no-dev: see the Windows job.
+        # --no-dev: see the Windows job. --python only here: the .venv it creates
+        # is then used by every later uv call (a job-wide UV_PYTHON would make
+        # `uv pip install` target the system Python instead).
         shell: bash
-        run: uv sync --locked --extra gui --no-dev
+        run: uv sync --locked --extra gui --no-dev --python "${{ steps.python.outputs.python-path }}"
 
       - name: Generate the SBOM
         # #213, see the Windows job. Runs before PyInstaller is installed so
