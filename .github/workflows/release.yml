@@ -402,6 +402,10 @@ jobs:
     # macos-15 is arm64; macos-latest moves to a new macOS over time.
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      # Wheels are chosen for this macOS, not the runner's (orjson ships a
+      # macosx_15_0 wheel next to an 11.0 one). Matches LSMinimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
 
     steps:
       - name: Checkout
@@ -441,7 +445,9 @@ jobs:
         # is then used by every later uv call (a job-wide UV_PYTHON would make
         # `uv pip install` target the system Python instead).
         shell: bash
-        run: uv sync --locked --extra gui --no-dev --python "${{ steps.python.outputs.python-path }}"
+        run: |
+          uv sync --locked --extra gui --no-dev --python "${{ steps.python.outputs.python-path }}" \
+            --python-platform aarch64-apple-darwin
 
       - name: Generate the SBOM
         # #213, see the Windows job. Runs before PyInstaller is installed so
