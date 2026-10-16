@@ -402,6 +402,8 @@ jobs:
     # macos-15 is arm64; macos-latest moves to a new macOS over time.
     runs-on: macos-15
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       # Wheels are chosen for this macOS, not the runner's (orjson ships a
       # macosx_15_0 wheel next to an 11.0 one). Matches LSMinimumSystemVersion.
@@ -604,3 +606,116 @@ jobs:
             app-start.log
             minos.txt
           if-no-files-found: ignore
+
+  macos27-scipy-check:
+    # TEMP: confirms that the "__thread_bss ... offset field is not zero" dlopen
+    # error users of 1.2.4 see on macOS 27.0.1 comes from scipy < 1.17.1
+    # (Fortran PROPACK). Remove before the PR.
+    name: macOS 27 scipy check (${{ matrix.scipy }})
+    # xcode-27 is the macOS 27 image (public preview); there is no macos-27 label.
+    runs-on: xcode-27
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scipy: "1.15.3"
+            expect: fail
+          - scipy: "1.17.1"
+            expect: pass
+          - scipy: "1.18.1"
+            expect: pass
+
+    steps:
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+
+      - name: Import scipy.sparse.linalg and run a PROPACK SVD
+        shell: bash
+        env:
+          # Older scipy only offers the propack solver with this set.
+          SCIPY_USE_PROPACK: "1"
+        run: |
+          set -uo pipefail
+          sw_vers
+          uv venv --python "${{ steps.python.outputs.python-path }}" venv
+          uv pip install --python venv "scipy==${{ matrix.scipy }}"
+          venv/bin/python -c '
+          import numpy as np, scipy, scipy.sparse.linalg as sla
+          print("scipy", scipy.__version__)
+          print(sla.svds(np.random.default_rng(0).random((20, 20)), k=3, solver="propack")[1])
+          ' 2>&1 | tee import.log
+          if [[ ${PIPESTATUS[0]} -eq 0 ]]; then result=pass; else result=fail; fi
+          echo "scipy ${{ matrix.scipy }}: $result (expected ${{ matrix.expect }})"
+          if [[ "$result" == fail ]] && ! grep -q "__thread_bss" import.log; then
+            echo "::error::Failed, but not with the __thread_bss dlopen error"
+            exit 1
+          fi
+          if [[ "$result" != "${{ matrix.expect }}" ]]; then
+            echo "::error::scipy ${{ matrix.scipy }} should $([[ ${{ matrix.expect }} == pass ]] && echo load || echo fail) on macOS 27"
+            exit 1
+          fi
+
+  macos27-app-start:
+    # The DMG built on macos-15 must also start on macOS 27.0.1, where 1.2.4
+    # fails to load scipy's PROPACK library.
+    name: macOS 27 - the app from the DMG starts
+    needs: build-macos-dmg
+    runs-on: xcode-27
+    timeout-minutes: 20
+
+    steps:
+      - name: Download the DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: aTrain-macos-${{ needs.build-macos-dmg.outputs.version }}
+
+      - name: Copy the app out of the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          mountpoint="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mountpoint"
+          hdiutil attach aTrain-*-macos-arm64.dmg -readonly -nobrowse -mountpoint "$mountpoint"
+          ditto "$mountpoint/aTrain.app" "$RUNNER_TEMP/aTrain.app"
+          hdiutil detach "$mountpoint"
+
+      - name: Smoke test - no scipy < 1.17.1
+        # scipy < 1.17.1 ships PROPACK as _propack/_?propack*.so, which the
+        # macOS 27.0.1 loader rejects.
+        shell: bash
+        run: |
+          set -euo pipefail
+          if find "$RUNNER_TEMP/aTrain.app" -type d -path '*/scipy/sparse/linalg/_propack' | grep -q .; then
+            echo "::error::Bundle contains scipy < 1.17.1 (scipy/sparse/linalg/_propack/)"
+            exit 1
+          fi
+
+      - name: Smoke test - the app starts
+        # Same check as in build-macos-dmg, on macOS 27.
+        shell: bash
+        run: |
+          set -euo pipefail
+          script -q app-start.log "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
+          pid=$!
+          status=0
+          sleep 60
+          if ! kill -0 "$pid" 2>/dev/null; then
+            echo "::error::App exited during startup"
+            status=1
+          elif ! grep -q "Running aTrain" app-start.log; then
+            echo "::error::App log lacks 'Running aTrain'"
+            status=1
+          fi
+          pkill -P "$pid" || true
+          kill "$pid" 2>/dev/null || true
+          echo "--- app-start.log ---"
+          cat app-start.log
+          exit "$status"
