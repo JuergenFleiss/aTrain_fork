@@ -422,6 +422,18 @@ jobs:
           echo "ATRAIN_VERSION=$version" >> "$GITHUB_ENV"
           echo "Resolved version: $version"
 
+      - name: Set up Python
+        # The python.org framework build. Without it uv picks the runner's
+        # Homebrew Python, whose libraries require the runner's macOS version.
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Use that Python for every uv call
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v10.3.0
         with:
