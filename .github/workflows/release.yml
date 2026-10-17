@@ -726,14 +726,31 @@ jobs:
     # language list stayed empty; this reproduces that without a tester. Also
     # times a real transcription with speaker detection (#307: 12 minutes for
     # 12 s of audio).
-    name: macOS frozen app - browser e2e (${{ matrix.runner }})
+    name: macOS frozen app - browser e2e (${{ matrix.runner }}, ${{ matrix.scenario }})
     needs: build-macos-dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, xcode-27]
+        # The extra scenarios (transcription test only) measure what the tester's
+        # Mac may do differently: fewer or more CPU threads than cores (the
+        # default is cores - 1, efficiency cores included) and background
+        # priority, roughly what App Nap or the efficiency cores mean.
+        include:
+          - runner: macos-15
+            scenario: default
+          - runner: xcode-27
+            scenario: default
+          - runner: xcode-27
+            scenario: 1-thread
+            cpu_threads: 1
+          - runner: xcode-27
+            scenario: 8-threads
+            cpu_threads: 8
+          - runner: xcode-27
+            scenario: background
+            launcher: taskpolicy -b
     env:
       # A fresh user folder, with the real models the tester used.
       ATRAIN_USER_DIR: ${{ github.workspace }}/atrain-user
@@ -804,8 +821,14 @@ jobs:
         run: |
           set -euo pipefail
           sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
-          script -q app.log "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
-          for _ in $(seq 120); do
+          if [[ -n "${{ matrix.cpu_threads }}" ]]; then
+            # NiceGUI's general storage; the page fills in the other settings.
+            mkdir -p "$ATRAIN_USER_DIR/settings"
+            echo '{"cpu_threads": ${{ matrix.cpu_threads }}}' > "$ATRAIN_USER_DIR/settings/storage-general.json"
+          fi
+          # shellcheck disable=SC2086 # the launcher is a command plus arguments
+          script -q app.log ${{ matrix.launcher }} "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
+          for _ in $(seq 300); do
             url="$(grep -o 'http://127\.0\.0\.1:[0-9]*' app.log | head -n 1 || true)"
             [[ -n "$url" ]] && break
             sleep 1
@@ -839,7 +862,9 @@ jobs:
             (( i++ % 6 == 0 )) && screencapture -x "screenshots/desktop/$(date +%H%M%S).png"
             sleep 10
           done > cpu.log 2>&1 &
-          "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest tests/e2e_browser -v -s -p no:cacheprovider \
+          tests=tests/e2e_browser
+          [[ "${{ matrix.scenario }}" != default ]] && tests=tests/e2e_browser/test_transcription.py
+          "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest "$tests" -v -s -p no:cacheprovider \
             --deselect tests/e2e_browser/test_pages_render.py::test_main_page_loads \
             --tracing retain-on-failure --screenshot only-on-failure --output test-results
 
@@ -848,6 +873,9 @@ jobs:
         shell: bash
         run: |
           pkill -f 'aTrain.app/Contents/MacOS/aTrain' || true
+          echo "--- settings used ---"
+          cat "$ATRAIN_USER_DIR/settings/storage-general.json" || true
+          echo
           echo "--- app.log ---"
           cat app.log || true
 
@@ -855,11 +883,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: macos-frozen-e2e-${{ matrix.runner }}
+          name: macos-frozen-e2e-${{ matrix.runner }}-${{ matrix.scenario }}
           path: |
             app.log
             cpu.log
             screenshots/
             test-results/
             ${{ env.ATRAIN_USER_DIR }}/transcriptions/
+            ${{ env.ATRAIN_USER_DIR }}/settings/
           if-no-files-found: ignore
