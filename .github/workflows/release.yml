@@ -736,7 +736,7 @@ jobs:
         runner: [macos-15, xcode-27]
     env:
       # A fresh user folder, with the real models the tester used.
-      ATRAIN_USER_DIR: ${{ github.workspace }}/../atrain-user
+      ATRAIN_USER_DIR: ${{ github.workspace }}/atrain-user
       ATRAIN_E2E_TRANSCRIBE: "1"
 
     steps:
