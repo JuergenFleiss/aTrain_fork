@@ -2,7 +2,8 @@
 
 `atrain_server` starts `aTrain start --no-native` as a subprocess for the whole
 test session, polls until it serves HTTP 200 on http://127.0.0.1:8080, and
-yields that URL. Terminated on teardown.
+yields that URL. Terminated on teardown. With `ATRAIN_E2E_URL` set, the
+tests run against that server instead and start nothing.
 
 Individual tests receive Playwright's own `page` / `browser` fixtures from
 pytest-playwright and drive real Chromium against the running server.
@@ -28,6 +29,11 @@ BOOT_TIMEOUT_S = 90
 
 @pytest.fixture(scope="session")
 def atrain_server() -> Generator[str, None, None]:
+    # A server that is already running, e.g. the frozen macOS app, whose
+    # entry point ignores `--no-native` and picks its own port.
+    if url := os.environ.get("ATRAIN_E2E_URL"):
+        yield url
+        return
     # WAKEPY_FAKE_SUCCESS mirrors tests/ui/test_boot_serve.py - wakepy has no
     # backend on headless CI and raises without it.
     env = {**os.environ, "WAKEPY_FAKE_SUCCESS": "1"}

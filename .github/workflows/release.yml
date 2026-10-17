@@ -719,3 +719,109 @@ jobs:
           echo "--- app-start.log ---"
           cat app-start.log
           exit "$status"
+
+  macos-frozen-e2e:
+    # The browser e2e tests (tests/e2e_browser) against the frozen app from the
+    # DMG. In #307 the page rendered but choosing a model did not stick and the
+    # language list stayed empty; this reproduces that without a tester.
+    name: macOS frozen app - browser e2e (${{ matrix.runner }})
+    needs: build-macos-dmg
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, xcode-27]
+    env:
+      # A fresh user folder with an empty model file: enough for the model
+      # list (read_downloaded_models only looks for a .bin file).
+      ATRAIN_USER_DIR: ${{ github.workspace }}/../atrain-user
+
+    steps:
+      - name: Checkout (for the tests)
+        uses: actions/checkout@v7
+
+      - name: Download the DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: aTrain-macos-${{ needs.build-macos-dmg.outputs.version }}
+
+      - name: Copy the app out of the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          mountpoint="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mountpoint"
+          hdiutil attach aTrain-*-macos-arm64.dmg -readonly -nobrowse -mountpoint "$mountpoint"
+          ditto "$mountpoint/aTrain.app" "$RUNNER_TEMP/aTrain.app"
+          hdiutil detach "$mountpoint"
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+
+      - name: Install pytest and Playwright
+        # Only the test tooling; the app under test is the frozen one.
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ steps.python.outputs.python-path }}" "$RUNNER_TEMP/e2e-venv"
+          uv pip install --python "$RUNNER_TEMP/e2e-venv" pytest pytest-playwright
+          "$RUNNER_TEMP/e2e-venv/bin/playwright" install chromium
+
+      - name: Start the frozen app
+        # Native mode as shipped: the entry point ignores arguments and picks
+        # its own port, which is read from the log.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ATRAIN_USER_DIR/models/large-v3-turbo"
+          touch "$ATRAIN_USER_DIR/models/large-v3-turbo/model.bin"
+          script -q app.log "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
+          for _ in $(seq 120); do
+            url="$(grep -o 'http://127\.0\.0\.1:[0-9]*' app.log | head -n 1 || true)"
+            [[ -n "$url" ]] && break
+            sleep 1
+          done
+          if [[ -z "$url" ]]; then
+            echo "::error::App did not report its URL"
+            cat app.log
+            exit 1
+          fi
+          echo "ATRAIN_E2E_URL=$url" >> "$GITHUB_ENV"
+          echo "App serves $url"
+          # The native window loads the page first; its splash screen imports
+          # torch in the server. Let that finish before the tests start.
+          sleep 60
+
+      - name: Run the browser e2e tests
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest tests/e2e_browser -v -p no:cacheprovider \
+            --tracing retain-on-failure --screenshot only-on-failure --output test-results
+
+      - name: Stop the app and show its log
+        if: always()
+        shell: bash
+        run: |
+          pkill -f 'aTrain.app/Contents/MacOS/aTrain' || true
+          echo "--- app.log ---"
+          cat app.log || true
+
+      - name: Upload app log and Playwright traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-frozen-e2e-${{ matrix.runner }}
+          path: |
+            app.log
+            test-results/
+          if-no-files-found: ignore
