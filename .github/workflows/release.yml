@@ -823,13 +823,20 @@ jobs:
 
       - name: Run the browser e2e tests
         # CPU and memory of the app processes every 10 s, to see whether a slow
-        # transcription is busy or idle. test_main_page_loads expects the
-        # splash screen, which the native window has already passed.
+        # transcription is busy or idle, and a capture of the whole screen
+        # (with the native window) every 60 s. The test itself screenshots the
+        # browser page. test_main_page_loads expects the splash screen, which
+        # the native window has already passed.
         shell: bash
+        env:
+          ATRAIN_E2E_SCREENSHOTS: screenshots/browser
         run: |
+          mkdir -p screenshots/desktop
+          i=0
           while true; do
             echo "== $(date +%T)"
             ps -A -o pid,ppid,%cpu,%mem,rss,pri,command | grep '[a]Train.app' | cut -c1-160
+            (( i++ % 6 == 0 )) && screencapture -x "screenshots/desktop/$(date +%H%M%S).png"
             sleep 10
           done > cpu.log 2>&1 &
           "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest tests/e2e_browser -v -s -p no:cacheprovider \
@@ -852,6 +859,7 @@ jobs:
           path: |
             app.log
             cpu.log
+            screenshots/
             test-results/
             ${{ env.ATRAIN_USER_DIR }}/transcriptions/
           if-no-files-found: ignore
