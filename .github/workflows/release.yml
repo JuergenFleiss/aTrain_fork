@@ -723,19 +723,21 @@ jobs:
   macos-frozen-e2e:
     # The browser e2e tests (tests/e2e_browser) against the frozen app from the
     # DMG. In #307 the page rendered but choosing a model did not stick and the
-    # language list stayed empty; this reproduces that without a tester.
+    # language list stayed empty; this reproduces that without a tester. Also
+    # times a real transcription with speaker detection (#307: 12 minutes for
+    # 12 s of audio).
     name: macOS frozen app - browser e2e (${{ matrix.runner }})
     needs: build-macos-dmg
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, xcode-27]
     env:
-      # A fresh user folder with an empty model file: enough for the model
-      # list (read_downloaded_models only looks for a .bin file).
+      # A fresh user folder, with the real models the tester used.
       ATRAIN_USER_DIR: ${{ github.workspace }}/../atrain-user
+      ATRAIN_E2E_TRANSCRIBE: "1"
 
     steps:
       - name: Checkout (for the tests)
@@ -777,14 +779,31 @@ jobs:
           uv pip install --python "$RUNNER_TEMP/e2e-venv" pytest pytest-playwright
           "$RUNNER_TEMP/e2e-venv/bin/playwright" install chromium
 
+      - name: Download the models
+        # Same layout as aTrain_core.load_resources.download_model: a snapshot
+        # of the pinned revision in models/<name>. huggingface_hub as in uv.lock.
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv pip install --python "$RUNNER_TEMP/e2e-venv" "huggingface_hub==0.36.0"
+          "$RUNNER_TEMP/e2e-venv/bin/python" - <<'PY'
+          import json, os
+          from pathlib import Path
+          from huggingface_hub import snapshot_download
+          models = json.loads(Path("aTrain_core/data/models.json").read_text())
+          for name in ["large-v3-turbo", "speaker-detection"]:
+              snapshot_download(repo_id=models[name]["repo_id"], revision=models[name]["revision"],
+                                local_dir=Path(os.environ["ATRAIN_USER_DIR"]) / "models" / name)
+          PY
+          du -sh "$ATRAIN_USER_DIR"/models/*
+
       - name: Start the frozen app
         # Native mode as shipped: the entry point ignores arguments and picks
         # its own port, which is read from the log.
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$ATRAIN_USER_DIR/models/large-v3-turbo"
-          touch "$ATRAIN_USER_DIR/models/large-v3-turbo/model.bin"
+          sysctl -n machdep.cpu.brand_string hw.ncpu hw.memsize
           script -q app.log "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
           for _ in $(seq 120); do
             url="$(grep -o 'http://127\.0\.0\.1:[0-9]*' app.log | head -n 1 || true)"
@@ -803,9 +822,18 @@ jobs:
           sleep 60
 
       - name: Run the browser e2e tests
+        # CPU and memory of the app processes every 10 s, to see whether a slow
+        # transcription is busy or idle. test_main_page_loads expects the
+        # splash screen, which the native window has already passed.
         shell: bash
         run: |
-          "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest tests/e2e_browser -v -p no:cacheprovider \
+          while true; do
+            echo "== $(date +%T)"
+            ps -A -o pid,ppid,%cpu,%mem,rss,pri,command | grep '[a]Train.app' | cut -c1-160
+            sleep 10
+          done > cpu.log 2>&1 &
+          "$RUNNER_TEMP/e2e-venv/bin/python" -m pytest tests/e2e_browser -v -s -p no:cacheprovider \
+            --deselect tests/e2e_browser/test_pages_render.py::test_main_page_loads \
             --tracing retain-on-failure --screenshot only-on-failure --output test-results
 
       - name: Stop the app and show its log
@@ -823,5 +851,7 @@ jobs:
           name: macos-frozen-e2e-${{ matrix.runner }}
           path: |
             app.log
+            cpu.log
             test-results/
+            ${{ env.ATRAIN_USER_DIR }}/transcriptions/
           if-no-files-found: ignore
