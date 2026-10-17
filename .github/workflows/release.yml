@@ -646,12 +646,12 @@ jobs:
           sw_vers
           uv venv --python "${{ steps.python.outputs.python-path }}" venv
           uv pip install --python venv "scipy==${{ matrix.scipy }}"
-          venv/bin/python -c '
+          # Inside `if`, so the runner's `bash -e` does not stop on the expected failure.
+          if venv/bin/python -c '
           import numpy as np, scipy, scipy.sparse.linalg as sla
           print("scipy", scipy.__version__)
           print(sla.svds(np.random.default_rng(0).random((20, 20)), k=3, solver="propack")[1])
-          ' 2>&1 | tee import.log
-          if [[ ${PIPESTATUS[0]} -eq 0 ]]; then result=pass; else result=fail; fi
+          ' 2>&1 | tee import.log; then result=pass; else result=fail; fi
           echo "scipy ${{ matrix.scipy }}: $result (expected ${{ matrix.expect }})"
           if [[ "$result" == fail ]] && ! grep -q "__thread_bss" import.log; then
             echo "::error::Failed, but not with the __thread_bss dlopen error"
