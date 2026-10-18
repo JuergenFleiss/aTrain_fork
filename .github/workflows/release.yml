@@ -26,6 +26,10 @@ on:
         description: "Bake required models into the MSIX (~4.4 GB instead of ~2.9 GB) - for offline installs and MS Store submissions"
         type: boolean
         default: false
+      debug_ssh:  # TEMP: macos-debug-ssh, remove before the PR
+        description: "Open an SSH session (tmate) on a macOS 27 runner with the built app"
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # required for `gh release create`
@@ -728,6 +732,7 @@ jobs:
     # 12 s of audio).
     name: macOS frozen app - browser e2e (${{ matrix.runner }}, ${{ matrix.scenario }})
     needs: build-macos-dmg
+    if: ${{ !inputs.debug_ssh }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -892,3 +897,60 @@ jobs:
             ${{ env.ATRAIN_USER_DIR }}/transcriptions/
             ${{ env.ATRAIN_USER_DIR }}/settings/
           if-no-files-found: ignore
+
+  macos-debug-ssh:
+    # TEMP: an SSH session on macOS 27 with the frozen app from the DMG and
+    # Playwright (Chromium, WebKit), to test by hand. Only on a manual run with
+    # debug_ssh; the connect command is printed in the log of the tmate step.
+    # Only the SSH keys of the GitHub user who started the run get in.
+    name: macOS 27 - SSH session (tmate)
+    needs: build-macos-dmg
+    if: ${{ inputs.debug_ssh }}
+    runs-on: xcode-27
+    timeout-minutes: 150
+
+    steps:
+      - name: Checkout (for the tests)
+        uses: actions/checkout@v7
+
+      - name: Download the DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: aTrain-macos-${{ needs.build-macos-dmg.outputs.version }}
+
+      - name: Copy the app out of the DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          sw_vers
+          mountpoint="$RUNNER_TEMP/dmg-mount"
+          mkdir -p "$mountpoint"
+          hdiutil attach aTrain-*-macos-arm64.dmg -readonly -nobrowse -mountpoint "$mountpoint"
+          ditto "$mountpoint/aTrain.app" "$RUNNER_TEMP/aTrain.app"
+          hdiutil detach "$mountpoint"
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+
+      - name: Install pytest and Playwright (Chromium, WebKit)
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv venv --python "${{ steps.python.outputs.python-path }}" "$RUNNER_TEMP/e2e-venv"
+          uv pip install --python "$RUNNER_TEMP/e2e-venv" pytest pytest-playwright
+          "$RUNNER_TEMP/e2e-venv/bin/playwright" install chromium webkit
+
+      - name: SSH session
+        # Ends after 120 minutes; `touch continue` in the session ends it earlier.
+        uses: mxschmitt/action-tmate@v3
+        timeout-minutes: 120
+        with:
+          limit-access-to-actor: true
