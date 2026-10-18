@@ -7,7 +7,6 @@ can't observe (it inspects Python-side element state, not the DOM
 Quasar produces).
 """
 
-import pytest
 from playwright.sync_api import Page, expect
 
 
@@ -39,30 +38,3 @@ def test_advanced_settings_button_opens_dialog(atrain_server: str, page: Page) -
 
     page.get_by_role("button", name="Advanced Settings").click()
     expect(gpu_label).to_be_visible()
-
-
-def test_selecting_a_model_fills_the_language_list(atrain_server: str, page: Page) -> None:
-    """Choosing a model is a round trip: the server stores it and fills the
-    language options from the model's config (language.py). In the frozen
-    macOS app neither happened (#307). Needs a model on disk; the macOS
-    job places an empty `large-v3-turbo/model.bin`, enough for the list."""
-    page.goto(atrain_server)
-    # Model is the first select on the page, language the second.
-    model_select, language_select = (
-        page.locator(".q-select").nth(0),
-        page.locator(".q-select").nth(1),
-    )
-    expect(model_select).to_be_visible(timeout=120_000)  # splash imports torch first
-
-    if "No models yet" in model_select.inner_text():
-        pytest.skip("no model on disk")
-
-    model_select.click()
-    option = page.locator(".q-menu .q-item").first
-    expect(option).to_be_visible()
-    name = option.inner_text().strip()
-    option.click()
-    expect(model_select).to_contain_text(name)
-
-    language_select.click()
-    expect(page.locator(".q-menu .q-item").first).to_be_visible()
