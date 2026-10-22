@@ -508,8 +508,10 @@ jobs:
           rm "$RUNNER_TEMP/certificate.p12"
           security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
-          if ! security find-identity -v -p codesigning "$keychain" | grep -qF "$MACOS_SIGNING_IDENTITY"; then
-            echo "::error::MACOS_SIGNING_IDENTITY is not in MACOS_CERTIFICATE_P12"
+          # A line break in the secret would split the grep pattern and match anything.
+          if [[ "$MACOS_SIGNING_IDENTITY" == *$'\n'* ]] \
+            || ! security find-identity -v -p codesigning "$keychain" | grep -qF "\"$MACOS_SIGNING_IDENTITY\""; then
+            echo "::error::MACOS_SIGNING_IDENTITY is not in MACOS_CERTIFICATE_P12 (or ends with a line break)"
             exit 1
           fi
 
