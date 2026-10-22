@@ -29,6 +29,23 @@ certificate expires after five years and the API key can be revoked; either
 shows up as a failing signing step in the release workflow. If they leak,
 revoke both at Apple.
 
+macOS publishing requires successful signing, notarization, and verification
+of the DMG. If signing secrets are missing, the workflow still builds an
+ad-hoc-signed DMG for testing and keeps it as a workflow artifact, but the
+macOS publishing job for a tagged release fails before uploading anything
+to GitHub or Zenodo.
+
+PR CI builds an ad-hoc-signed macOS app on macOS 15 and checks that same app
+on macOS 15 and 27. The startup checks require a connected frontend, successful
+deferred runtime imports, and completed main-page construction. A startup
+failure or missing readiness signal fails CI even if the GUI process stays alive.
+These checks run before merge; the release workflow builds, signs, verifies,
+and publishes the release artifacts without rerunning application startup.
+
+Tag runs are serialized across the complete Windows and macOS release sequence
+because both uploads use the same pending Zenodo draft. A newer tag does not
+cancel active signing or uploads; branch test builds run independently.
+
 How to check a downloaded release against the published checksums and this
 signature: [Verifying a release](verifying-releases.md).
 

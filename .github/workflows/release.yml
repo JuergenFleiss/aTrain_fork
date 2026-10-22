@@ -7,9 +7,9 @@ name: Release
 # and stay available as workflow artifacts, since they exceed the 2 GiB
 # release-asset limit; the GitHub release carries the sha256 checksums
 # and the CycloneDX SBOM (#213) for verification. Flatpak (needs Flathub
-# manifest refresh) is a follow-up. An Apple silicon macOS DMG (Developer ID
-# signed and notarized when the Apple secrets are set, ad-hoc signed without
-# them) is added to the same Zenodo draft, its checksums and SBOM to the release.
+# manifest refresh) is a follow-up. An Apple silicon macOS DMG is added to the
+# same Zenodo draft, its checksums and SBOM to the release, only after Developer
+# ID signing and notarization. Ad-hoc builds remain available as test artifacts.
 
 on:
   push:
@@ -25,6 +25,13 @@ on:
         description: "Bake required models into the MSIX (~4.4 GB instead of ~2.9 GB) - for offline installs and MS Store submissions"
         type: boolean
         default: false
+
+# Both platform uploads mutate one shared Zenodo draft. Hold the lock for the
+# entire workflow, including the gap between Windows and macOS publication.
+# Tag dispatches share it too; ordinary branch test builds remain independent.
+concurrency:
+  group: ${{ startsWith(github.ref, 'refs/tags/v') && 'release-zenodo' || format('release-test-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 permissions:
   contents: write  # required for `gh release create`
@@ -228,10 +235,9 @@ jobs:
 
   sign-windows-msix:
     name: Sign Windows MSIX
-    # Fan-in: the build jobs only produce artifacts, signing and the GitHub
-    # release happen here, the Zenodo upload in `publish-to-zenodo` - once per
-    # release, with all artifacts in hand. Adding the EXE (#221) or
-    # Flatpak means adding a build job and listing it in `needs`.
+    # Signs the Windows build and creates the GitHub release; its Zenodo
+    # upload is handled by `publish-to-zenodo`. macOS artifacts have their
+    # own validation and publishing jobs.
     needs: build-windows-msix
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
@@ -249,9 +255,10 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: aTrain-*-${{ needs.build-windows-msix.outputs.version }}${{ needs.build-windows-msix.outputs.suffix }}
+          # Match only the Windows artifact; a wildcard could also download the
+          # macOS DMG and bypass its separate validation and publishing jobs.
+          name: aTrain-msix-${{ needs.build-windows-msix.outputs.version }}${{ needs.build-windows-msix.outputs.suffix }}
           path: artifacts
-          merge-multiple: true
 
       - name: Add the source archive
         # Keeps the record self-contained: the exact sources the installers
@@ -334,9 +341,9 @@ jobs:
       - name: Keep the signed files as a workflow artifact
         # `publish-to-zenodo` downloads them from here, so a failed upload can
         # be re-run on its own without signing again. `overwrite` because a
-        # re-run of this job would otherwise fail on the existing name. Named
-        # `signed-aTrain-*`, outside the `aTrain-*-<version>` pattern the
-        # download step above uses, so a re-run never mixes it into `artifacts/`.
+        # re-run of this job would otherwise fail on the existing name. The
+        # download above selects only the unsigned MSIX build, so a re-run
+        # never mixes these signed files into `artifacts/`.
         uses: actions/upload-artifact@v7
         with:
           name: signed-aTrain-${{ needs.build-windows-msix.outputs.version }}${{ needs.build-windows-msix.outputs.suffix }}
@@ -353,6 +360,8 @@ jobs:
     # A job of its own (#305): a 3 GB upload to an external service can fail
     # (502s) and is re-run with "Re-run failed jobs" without signing again.
     needs: [build-windows-msix, sign-windows-msix]
+    outputs:
+      draft-id: ${{ steps.zenodo.outputs.draft-id }}
     # Slim builds only: the bundled variant is an internal build, not a
     # published release artifact.
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.bundle_models
@@ -375,6 +384,7 @@ jobs:
           path: artifacts
 
       - name: Upload installers to Zenodo (draft)
+        id: zenodo
         # Zenodo is the download channel for the installers (#229). Creates a
         # DRAFT only - a maintainer publishes it in the Zenodo UI, which also
         # submits it to the community.
@@ -404,6 +414,9 @@ jobs:
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
+      # Set only after signing, notarization and verification succeed. The
+      # publishing job requires it so ad-hoc test builds cannot become releases.
+      signing-verified: ${{ steps.sign-dmg.outputs.verified }}
     env:
       # Wheels are chosen for this macOS, not the runner's (orjson ships a
       # macosx_15_0 wheel next to an 11.0 one). Matches LSMinimumSystemVersion.
@@ -485,7 +498,6 @@ jobs:
           uv run --no-sync pyinstaller macos_freeze.spec --noconfirm 2>&1 | tee pyinstaller-macos.log
 
       - name: Sign the app with the Developer ID
-        # Before the smoke tests, so they run under the hardened runtime.
         # Inside out, without --deep (deprecated for signing): every Mach-O
         # file, then the frameworks, then the bundle with its main executable.
         # The keychain lives only for this job, see the cleanup step.
@@ -594,30 +606,6 @@ jobs:
             exit 1
           fi
 
-      - name: Smoke test - the app starts
-        # Not --help: the frozen entry point ignores arguments and starts the GUI.
-        # `script` gives the app a pty, so its stdout is line-buffered (a frozen
-        # app ignores PYTHONUNBUFFERED) and the log is complete after 60 s.
-        shell: bash
-        run: |
-          set -euo pipefail
-          script -q app-start.log dist/aTrain.app/Contents/MacOS/aTrain > /dev/null 2>&1 &
-          pid=$!
-          status=0
-          sleep 60
-          if ! kill -0 "$pid" 2>/dev/null; then
-            echo "::error::App exited during startup"
-            status=1
-          elif ! grep -q "Running aTrain" app-start.log; then
-            echo "::error::App log lacks 'Running aTrain'"
-            status=1
-          fi
-          pkill -P "$pid" || true
-          kill "$pid" 2>/dev/null || true
-          echo "--- app-start.log ---"
-          cat app-start.log
-          exit "$status"
-
       - name: Notarize the app
         # Before the DMG, so the app inside carries the stapled ticket and
         # Gatekeeper accepts it offline, also once copied out of the DMG.
@@ -654,12 +642,13 @@ jobs:
           hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mountpoint"
           status=0
           [[ -d "$mountpoint/aTrain.app" ]] || { echo "::error::aTrain.app missing in DMG"; status=1; }
-          # The start test ran the app in place; check the copy that ships.
+          # Check the signature of the copy that ships.
           codesign --verify --deep --strict "$mountpoint/aTrain.app" || status=1
           hdiutil detach "$mountpoint"
           exit "$status"
 
       - name: Sign and notarize the DMG
+        id: sign-dmg
         if: env.MACOS_SIGN == 'true'
         shell: bash
         env:
@@ -673,7 +662,9 @@ jobs:
           codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg" \
             || { sleep 10; codesign --timestamp --sign "$MACOS_SIGNING_IDENTITY" "$dmg"; }
           .github/scripts/macos-notarize.sh "$dmg" notary-dmg.json
+          codesign --verify --strict --verbose=2 "$dmg"
           spctl -a -vvv -t open --context context:primary-signature "$dmg"
+          echo "verified=true" >> "$GITHUB_OUTPUT"
 
       - name: Remove the signing keychain
         if: always() && env.MACOS_SIGN == 'true'
@@ -708,75 +699,16 @@ jobs:
           path: |
             pyinstaller-macos.log
             build/macos_freeze/warn-macos_freeze.txt
-            app-start.log
             minos.txt
             notary-*.json
           if-no-files-found: ignore
-
-  macos27-app-start:
-    # The DMG built on macos-15 must also start on macOS 27.0.1, where 1.2.4
-    # fails to load scipy's PROPACK library.
-    name: macOS 27 - the app from the DMG starts
-    needs: build-macos-dmg
-    runs-on: xcode-27
-    timeout-minutes: 20
-
-    steps:
-      - name: Download the DMG
-        uses: actions/download-artifact@v8
-        with:
-          name: aTrain-macos-${{ needs.build-macos-dmg.outputs.version }}
-
-      - name: Copy the app out of the DMG
-        shell: bash
-        run: |
-          set -euo pipefail
-          sw_vers
-          mountpoint="$RUNNER_TEMP/dmg-mount"
-          mkdir -p "$mountpoint"
-          hdiutil attach aTrain-*-macos-arm64.dmg -readonly -nobrowse -mountpoint "$mountpoint"
-          ditto "$mountpoint/aTrain.app" "$RUNNER_TEMP/aTrain.app"
-          hdiutil detach "$mountpoint"
-
-      - name: Smoke test - no scipy < 1.17.1
-        # scipy < 1.17.1 ships PROPACK as _propack/_?propack*.so, which the
-        # macOS 27.0.1 loader rejects.
-        shell: bash
-        run: |
-          set -euo pipefail
-          if find "$RUNNER_TEMP/aTrain.app" -type d -path '*/scipy/sparse/linalg/_propack' | grep -q .; then
-            echo "::error::Bundle contains scipy < 1.17.1 (scipy/sparse/linalg/_propack/)"
-            exit 1
-          fi
-
-      - name: Smoke test - the app starts
-        # Same check as in build-macos-dmg, on macOS 27.
-        shell: bash
-        run: |
-          set -euo pipefail
-          script -q app-start.log "$RUNNER_TEMP/aTrain.app/Contents/MacOS/aTrain" > /dev/null 2>&1 &
-          pid=$!
-          status=0
-          sleep 60
-          if ! kill -0 "$pid" 2>/dev/null; then
-            echo "::error::App exited during startup"
-            status=1
-          elif ! grep -q "Running aTrain" app-start.log; then
-            echo "::error::App log lacks 'Running aTrain'"
-            status=1
-          fi
-          pkill -P "$pid" || true
-          kill "$pid" 2>/dev/null || true
-          echo "--- app-start.log ---"
-          cat app-start.log
-          exit "$status"
 
   publish-macos-to-zenodo:
     name: Publish macOS DMG to Zenodo (draft)
     # A job of its own like `publish-to-zenodo`, so a failed upload is re-run
     # without rebuilding. After it, because the DMG goes into the draft that
-    # job creates (ZENODO_APPEND), and only once the DMG started on macOS 27.
-    needs: [build-macos-dmg, macos27-app-start, publish-to-zenodo]
+    # job creates (ZENODO_APPEND). Startup compatibility is checked in PR CI.
+    needs: [build-macos-dmg, publish-to-zenodo]
     if: startsWith(github.ref, 'refs/tags/v') && !inputs.bundle_models
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -785,6 +717,17 @@ jobs:
       ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
 
     steps:
+      - name: Require a signed and notarized DMG
+        shell: bash
+        env:
+          MACOS_SIGNING_VERIFIED: ${{ needs.build-macos-dmg.outputs.signing-verified }}
+        run: |
+          set -euo pipefail
+          if [[ "${MACOS_SIGNING_VERIFIED:-}" != 'true' ]]; then
+            echo "::error::macOS publishing requires a signed, notarized and verified DMG. Unsigned builds remain available as workflow artifacts."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
 
@@ -812,7 +755,7 @@ jobs:
       - name: Add the DMG to the Zenodo draft
         env:
           ZENODO_BASE: ${{ vars.ZENODO_BASE }}
-          ZENODO_CONCEPT_ID: ${{ vars.ZENODO_CONCEPT_ID }}
+          ZENODO_DRAFT_ID: ${{ needs.publish-to-zenodo.outputs.draft-id }}
           ZENODO_APPEND: "1"
         run: |
           if [[ -z "${ZENODO_TOKEN:-}" ]]; then
