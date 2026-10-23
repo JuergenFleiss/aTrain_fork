@@ -24,19 +24,19 @@ SPEC.loader.exec_module(probe)
         ),
         (
             0,
-            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode: node[    1] - MUL_MAT",
+            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode_impl: node[    1] - MUL_MAT",
             {"transcription": [{"text": "hello"}]},
             "passed",
         ),
         (
             1,
-            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode: node[    1] - MUL_MAT",
+            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode_impl: node[    1] - MUL_MAT",
             {"transcription": [{"text": "hello"}]},
             "failed",
         ),
         (
             0,
-            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode: node[    1] - MUL_MAT\nerror: command buffer failed",
+            "ggml_metal_init: picking default device: Apple M1\nggml_metal_op_encode_impl: node[    1] - MUL_MAT\nerror: command buffer failed",
             {"transcription": [{"text": "hello"}]},
             "failed",
         ),
@@ -75,3 +75,26 @@ def test_metal_malformed_output_is_failed_without_raising(tmp_path, monkeypatch)
     metadata = {}
     assert probe.probe_metal(tmp_path, tmp_path, metadata) == "failed"
     assert "metal_error" in metadata
+
+
+@pytest.mark.parametrize("operation", ["ADD", "MUL", "UNARY"])
+def test_metal_accepts_executed_arithmetic_operations(tmp_path, operation):
+    log = tmp_path / "metal.log"
+    output = tmp_path / "metal.json"
+    log.write_text(
+        "ggml_metal_init: picking default device: Apple Paravirtual device\n"
+        f"ggml_metal_op_encode_impl: node[   12] - {operation} tensor (concurrent)\n"
+    )
+    output.write_text(json.dumps({"transcription": [{"text": "hello"}]}))
+    assert probe.classify_inference({"exit_code": 0}, log, output, metal=True) == "passed"
+
+
+def test_metal_noop_is_not_execution(tmp_path):
+    log = tmp_path / "metal.log"
+    output = tmp_path / "metal.json"
+    log.write_text(
+        "ggml_metal_init: picking default device: Apple Paravirtual device\n"
+        "ggml_metal_op_encode_impl: node[   12] - ADD (noop)\n"
+    )
+    output.write_text(json.dumps({"transcription": [{"text": "hello"}]}))
+    assert probe.classify_inference({"exit_code": 0}, log, output, metal=True) == "failed"

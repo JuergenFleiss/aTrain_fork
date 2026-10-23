@@ -90,8 +90,9 @@ sequence in order. Do not discard unmatched words silently. Report reference
 coverage, unmatched reference words, unmatched hypothesis words, and the number
 of boundaries scored. For each matched word, calculate absolute start and end
 boundary error against human reference in milliseconds. Also report each
-system's median and p95 absolute boundary error. Do not report a matched-only
-timing score as complete when the coverage gate fails.
+system's median and p95 absolute boundary error. Use the same reference-word subset for the baseline and candidate comparison.
+Report timing scores as incomplete when missing or unusable intervals prevent
+scoring that subset; a favorable matched-only score cannot pass the gate.
 
 ## Fixed gates
 

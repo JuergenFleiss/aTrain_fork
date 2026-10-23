@@ -20,7 +20,9 @@ GitHub requires a dispatch workflow to exist on the default branch before it is
 discoverable. Bootstrap in the testing fork with a narrowly scoped temporary
 push trigger on the experiment branch, or a pull-request trigger without secrets,
 then remove the temporary trigger after validation. Do not change the default
-branch. Once registered:
+branch. A push-triggered run does not remove the default-branch requirement.
+Until the dispatch workflow is merged there, another branch run needs the
+narrow temporary trigger again. After the workflow exists on the default branch:
 
 ```sh
 gh workflow run whisper-cpp-evaluation.yml --repo OWNER/TESTING_FORK --ref EXPERIMENT_BRANCH
@@ -86,10 +88,11 @@ CPU helper test.
 | --- | --- | --- | --- |
 | CPU | Explicit `--no-gpu`, exit zero and nonempty structured transcription | Build/model/fixture/inference/schema failure | Never |
 | Metal compute | Command completed and every computed value matched | Compiler/resource/command/result failure | No devices and no default device |
-| Metal inference | Compute passed; real helper inference exited zero with nonempty JSON; initialization and Metal `MUL_MAT` operation logs present | Missing execution evidence, CPU fallback or inference error | Only when device probe proved absence |
+| Metal inference | Compute passed; real helper inference exited zero with nonempty JSON; initialization and non-noop Metal arithmetic operation logs present | Missing execution evidence, CPU fallback or inference error | Only when device probe proved absence |
 
 The pinned-source markers are `ggml_metal_init: picking default device:` and
-`ggml_metal_op_encode: node[...] ... MUL_MAT`. The latter is emitted from the
+`ggml_metal_op_encode_impl: node[...]` with `MUL_MAT`, `ADD`, `MUL`,
+`SCALE` or `UNARY` (excluding no-ops). The latter is emitted from the
 Metal operation encoder with `GGML_METAL_GRAPH_DEBUG=1`, and the diagnostic build
 retains it. The classifier rejects missing markers and known fallback/error logs.
 It does not treat an advertised GPU, initialized backend or CPU success as Metal

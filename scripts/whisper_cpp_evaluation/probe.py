@@ -65,7 +65,12 @@ def classify_inference(result, log, output, metal=False):
         # Pinned-source initialization AND actual Metal operation encoding.
         # WHISPER_DEBUG is required to retain GGML_LOG_DEBUG node messages.
         initialized = "ggml_metal_init: picking default device:" in text
-        executed = re.search(r"ggml_metal_op_encode: node\[\s*\d+\].*MUL_MAT", text)
+        executed = re.search(
+            r"^ggml_metal_op_encode_impl: node\[\s*\d+\] -\s+"
+            r"(?:MUL_MAT|ADD|MUL|SCALE|UNARY)\b(?![^\n]*\(noop\))",
+            text,
+            re.MULTILINE,
+        )
         failed = re.search(r"no GPU found|failed to initialize|error:", text, re.I)
         if not initialized or not executed or failed:
             return "failed"
