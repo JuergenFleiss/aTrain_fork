@@ -76,6 +76,8 @@ jobs:
             2>&1 | tee "$PROBE_REPORT/prepare.log"
 
       - name: Evaluate native word timestamps with network denied
+        id: baseline
+        continue-on-error: true
         timeout-minutes: 30
         run: |
           set -o pipefail
@@ -84,6 +86,18 @@ jobs:
             --model-dir "$PROBE_WORK/model" --speech "$PROBE_WORK/jfk.wav" \
             --work-dir "$PROBE_WORK" --output-dir "$PROBE_REPORT" \
             2>&1 | tee "$PROBE_REPORT/evaluation.log"
+
+      - name: Diagnose original-timeline VAD clips on the same assets
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          mkdir -p "$PROBE_REPORT/vad"
+          uv run --no-sync --project scripts/mlx_whisper_evaluation \
+            python scripts/mlx_whisper_evaluation/feasibility.py --vad \
+            --model-dir "$PROBE_WORK/model" --speech "$PROBE_WORK/jfk.wav" \
+            --work-dir "$PROBE_WORK" --output-dir "$PROBE_REPORT/vad" \
+            --baseline-report "$PROBE_REPORT/report.json" \
+            2>&1 | tee "$PROBE_REPORT/vad/evaluation.log"
 
       - name: Retain logs and public-fixture JSON, excluding audio and models
         if: always()

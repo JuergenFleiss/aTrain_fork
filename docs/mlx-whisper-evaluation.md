@@ -4,6 +4,42 @@ Evidence retrieved 23 October 2026. This is an isolated feasibility experiment
 after whisper.cpp failed the timestamp checks. It does not select a production
 backend, approve timestamp quality, or change the application dependencies.
 
+## First runtime result: native timestamps, no VAD
+
+[Run 39927763560](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39927763560)
+completed on macOS 15.7.9 arm64, runner image `20260907.0337.1`, Apple
+Paravirtual device, 7,516,192,768 bytes reported system memory. Explicit MLX GPU
+selection, evaluated matrix multiplication/convolution, and all seven complete
+ASR workers passed under `sandbox-exec` network denial. Each worker's attempted
+socket connection returned EPERM. Model/config downloads were verified before
+this network-denied inference. This establishes this pinned stack's execution
+on this particular hosted VM, including CPU DTW, not a physical-Mac benchmark.
+
+The base recording decoded with macOS `afconvert` to 176,000 samples (11 s),
+PCM SHA-256 `200cf71b13e4fc571f02943f470fd3305ea953ac02363541f444dc6139bf2463`.
+Its bytes differ from the earlier FFmpeg decode, so this is not an identical-PCM
+comparison with the previous backend. Base inference took 14.10 s and reported
+2,142,867,022 bytes peak MLX memory. Other fresh workers had different model/JIT
+and operating-system cache states; no speedup or repeat benchmark follows.
+
+| Structural case | Native result |
+| --- | --- |
+| Base, 11 s | 22 words, ordered positive intervals within duration |
+| Add 5 s leading silence | Same 22 words; maximum boundary shift error 340 ms |
+| Add 5 s trailing silence | Same 22 words; maximum boundary shift error 560 ms |
+| Two copies separated by 5 s silence, 27 s total | Complete repeated 44-word sequence retained; first/second copy maximum boundary shift errors 560/220 ms |
+| Add 25 s leading silence, crossing the 30 s processing window | 22 words; seven unmatched words under the fixed ordered comparison; maximum matched boundary shift error 660 ms |
+| Silence only, 8 s | Hallucinated “Thank you.” |
+| Noise only, 8 s | Hallucinated “so” |
+
+All matched shift medians were 0 ms, but every fixed 50 ms maximum-shift check
+failed. These are invariance errors against the base model output after a known
+audio transformation, not errors against human word annotations. The correct
+conclusion is that native MLX timestamps avoid the preceding zero-duration
+interval failure on this fixture, while the no-VAD candidate still fails the
+structural gate. Large silence offsets were not simply dropped from the
+timeline. VAD drift has not been tested by this no-VAD run.
+
 ## Reproducible inputs
 
 The package under test is the published **mlx-whisper 0.4.3** wheel, rather than
@@ -182,3 +218,54 @@ pass, or user-audio upload is part of this evidence. Preserve the existing
 [scoring gates](whisper-cpp-scoring.md), disclose the greedy-versus-beam decoding
 difference, and report missing checks as pending rather than passing them from
 nonempty word output.
+
+## Separate VAD diagnostic contract
+
+Reuse **faster-whisper 1.2.1**, already pinned by the application's lock, and its
+bundled `faster_whisper/assets/silero_vad_v6.onnx`. The published wheel
+SHA-256 is `79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7`.
+The 1,245,151-byte ONNX asset SHA-256 is
+`4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2`;
+`vad.py` SHA-256 is
+`37a9c774aefdd3162d936b896c8dcf5571b2ed938d65bffecfd631770049a18d`.
+Both were extracted from the hash-verified wheel and match upstream
+[`v1.2.1`, commit `65882eee9f5cdbeeb2d877f1131d48cf241b327d`](https://github.com/SYSTRAN/faster-whisper/tree/65882eee9f5cdbeeb2d877f1131d48cf241b327d)
+byte-for-byte. This requires ONNX Runtime, already a faster-whisper dependency;
+the VAD uses `CPUExecutionProvider` and does not download a model.
+
+Faster-whisper's [license](https://github.com/SYSTRAN/faster-whisper/blob/65882eee9f5cdbeeb2d877f1131d48cf241b327d/LICENSE)
+is MIT. Its VAD code credits adaptation from Silero. Silero's
+[`v6.0` license](https://github.com/snakers4/silero-vad/blob/fba061dc5559f696e62171e9a0741782b0fdc23c/LICENSE)
+is MIT, copyright Silero Team. Retain both notices; the bundled ONNX file is
+pinned through faster-whisper's published artifact, not asserted identical to
+an unmodified Silero release graph.
+
+Call `get_speech_timestamps(audio, vad_options=VadOptions(), sampling_rate=16000)`
+on the same original, one-dimensional mono float32 waveform. Output is a list
+of `{start, end}` **sample indices**, not seconds, on the original timeline.
+Defaults are threshold 0.5, negative threshold 0.35, minimum speech 0 ms,
+minimum silence 2000 ms, maximum speech infinity, padding 400 ms each side.
+The implementation analyzes 512-sample windows, pads internally, and clamps
+returned ends to the input length. Nearby spans share short-gap padding to
+avoid overlap; do not pad again. Record the actual spans and every option.
+
+There is a source-level trap in mlx-whisper 0.4.3: its multi-clip loop does not
+reset `seek` to each subsequent `seek_clip_start`. Passing several disjoint
+`clip_timestamps` pairs in one call can therefore process the intervening gap.
+For this diagnostic, use **one call per VAD span against the full original
+waveform**, with `clip_timestamps=[start / 16000, end / 16000]` and
+`condition_on_previous_text=False`. The MLX timestamps are already original
+seconds: combine the results without adding offsets, compressing the waveform,
+or applying `SpeechTimestampsMap`. Clip coordinates round to 10 ms mel frames;
+word alignment still uses its native grid and heuristics. Report out-of-span or
+out-of-file predictions rather than clamping them into a passing result.
+
+An empty MLX clip list means **process the whole file**, so no-speech VAD output
+must explicitly return empty text/segments without invoking ASR. Empty audio
+also needs an explicit short circuit. Validate sorted non-overlapping finite
+spans within the original sample count before making calls. Independent clips
+change decoding context and recompute the full spectrogram, so this is a
+correctness diagnostic with disclosed overhead, not a performance integration.
+If VAD excludes quiet words, count them as missing; do not score only the words
+that survive. Keep no-VAD and VAD results separately, retain the unchanged
+50 ms transformation tolerance, and test the silence/noise cases in both modes.

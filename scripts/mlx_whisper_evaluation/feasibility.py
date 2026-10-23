@@ -43,6 +43,17 @@ MODEL_FILES = {
 }
 NETWORK_POLICY = "(version 1) (allow default) (deny network*)"
 PACKAGES = {"mlx-whisper": "0.4.3", "mlx": "0.32.4", "mlx-metal": "0.32.4"}
+VAD_PACKAGES = {"faster-whisper": "1.2.1", "onnxruntime": "1.27.0"}
+VAD_MODEL_SHA256 = "4cbf549b8326f60f80f2536d9eefeb450a9abe83365a098031c89719f1be17d2"
+VAD_SOURCE_SHA256 = "37a9c774aefdd3162d936b896c8dcf5571b2ed938d65bffecfd631770049a18d"
+# Fixed upstream defaults before the diagnostic; maximum speech duration remains infinity.
+VAD_OPTIONS = {
+    "threshold": 0.5,
+    "neg_threshold": 0.35,
+    "min_speech_duration_ms": 0,
+    "min_silence_duration_ms": 2000,
+    "speech_pad_ms": 400,
+}
 
 
 def compact(text):
@@ -147,6 +158,86 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
 
 
+def clip_seconds(spans, sample_count):
+    """VAD already pads/clamps spans; preserve their original waveform positions."""
+    clips, previous_end = [], 0
+    for span in spans:
+        start, end = span["start"], span["end"]
+        if (
+            type(start) is not int
+            or type(end) is not int
+            or not previous_end <= start < end <= sample_count
+        ):
+            raise ValueError("invalid, overlapping, or unordered VAD sample span")
+        clip = [start / 16000, end / 16000]
+        if round(clip[0] * 100) >= round(clip[1] * 100):
+            raise ValueError("VAD span collapses on MLX's 10 ms clip grid")
+        clips.append(clip)
+        previous_end = end
+    return clips
+
+
+def vad_clips(audio):
+    import faster_whisper.vad as vad
+
+    versions = {name: importlib.metadata.version(name) for name in VAD_PACKAGES}
+    if versions != VAD_PACKAGES:
+        raise RuntimeError("unexpected VAD package versions")
+    model = Path(vad.__file__).parent / "assets" / "silero_vad_v6.onnx"
+    if model.stat().st_size != 1245151 or shared.digest(model) != VAD_MODEL_SHA256:
+        raise RuntimeError("bundled Silero VAD model checksum mismatch")
+    if shared.digest(Path(vad.__file__)) != VAD_SOURCE_SHA256:
+        raise RuntimeError("VAD implementation checksum mismatch")
+    started = time.monotonic()
+    spans = vad.get_speech_timestamps(
+        audio,
+        vad_options=vad.VadOptions(max_speech_duration_s=float("inf"), **VAD_OPTIONS),
+        sampling_rate=16000,
+    )
+    clips = clip_seconds(spans, len(audio))
+    if vad.get_vad_model().session.get_providers() != ["CPUExecutionProvider"]:
+        raise RuntimeError("unexpected VAD execution provider")
+    return clips, {
+        "packages": versions,
+        "model_filename": model.name,
+        "model_sha256": VAD_MODEL_SHA256,
+        "source_sha256": VAD_SOURCE_SHA256,
+        "options": VAD_OPTIONS,
+        "max_speech_duration_s": "infinity (upstream default)",
+        "providers": vad.get_vad_model().session.get_providers(),
+        "wall_s": time.monotonic() - started,
+        "spans_samples": spans,
+        "clip_timestamps_seconds": clips,
+        "effective_mlx_clip_grid_seconds": [[round(t * 100) / 100 for t in clip] for clip in clips],
+        "semantics": "already padded original sample spans; no waveform concatenation or timestamp remapping",
+    }
+
+
+def transcribe_clips(audio, clips, transcribe, options):
+    """One clip per call avoids MLX 0.4.3's missing seek reset between clips."""
+    merged = {"text": "", "segments": [], "language": "en"}
+    results = []
+    for clip in clips:
+        result = transcribe(audio, clip_timestamps=clip, **options)
+        results.append(result)
+        merged["text"] += result["text"]
+        merged["segments"].extend(result["segments"])
+    return merged, results
+
+
+def clip_interval_problems(results, clips):
+    problems = []
+    for index, (result, clip) in enumerate(zip(results, clips, strict=True)):
+        start, end = [round(value * 100) / 100 for value in clip]
+        for segment in result["segments"]:
+            for word in segment.get("words", []):
+                if not start <= round(word["start"], 9) <= round(word["end"], 9) <= end:
+                    problems.append(
+                        f"clip {index}: native word interval outside selected original-time clip: {word!r}"
+                    )
+    return problems
+
+
 def worker(args):
     """This process must be launched under sandbox-exec, including capability mode."""
     metadata = {"status": "error", "phase": "network isolation"}
@@ -184,32 +275,48 @@ def worker(args):
             raise RuntimeError("GPU arithmetic verification failed")
         metadata["gpu_matmul_conv"] = "passed"
         if not args.capability_only:
-            metadata["phase"] = "ASR inference with GPU default; CPU DTW alignment"
             import mlx_whisper
 
             audio = np.frombuffer(shared.read_audio(args.speech), dtype="<i2").astype(np.float32)
             audio /= 32768
+            clips = None
+            if args.vad:
+                metadata["phase"] = "CPU Silero VAD on original waveform"
+                clips, metadata["vad"] = vad_clips(audio)
+            metadata["phase"] = "ASR inference with GPU default; CPU DTW alignment"
+            options = {
+                "path_or_hf_repo": str(args.model_dir.resolve()),
+                "word_timestamps": True,
+                "language": "en",
+                "temperature": 0.0,
+                "fp16": True,
+                "verbose": None,
+                "condition_on_previous_text": True,
+                "no_speech_threshold": 0.6,
+                "logprob_threshold": -1.0,
+                "compression_ratio_threshold": 2.4,
+                "hallucination_silence_threshold": None,
+            }
             mx.reset_peak_memory()
             started = time.monotonic()
-            result = mlx_whisper.transcribe(
-                audio,
-                path_or_hf_repo=str(args.model_dir.resolve()),
-                word_timestamps=True,
-                language="en",
-                temperature=0.0,
-                fp16=True,
-                verbose=None,
-                condition_on_previous_text=True,
-                no_speech_threshold=0.6,
-                logprob_threshold=-1.0,
-                compression_ratio_threshold=2.4,
-                hallucination_silence_threshold=None,
-            )
-            mx.synchronize()
-            metadata["inference_wall_s"] = time.monotonic() - started
-            metadata["gpu_peak_memory_bytes"] = mx.get_peak_memory()
-            if metadata["gpu_peak_memory_bytes"] <= 0 or mx.default_device() != mx.gpu:
-                raise RuntimeError("GPU inference evidence missing")
+            if args.vad:
+                result, native = transcribe_clips(audio, clips, mlx_whisper.transcribe, options)
+                metadata["native_clip_results"] = native
+                metadata["asr_invocations"] = len(clips)
+                metadata["clip_interval_problems"] = clip_interval_problems(native, clips)
+            else:
+                result = mlx_whisper.transcribe(audio, **options)
+                metadata["asr_invocations"] = 1
+            if metadata["asr_invocations"]:
+                mx.synchronize()
+                metadata["inference_wall_s"] = time.monotonic() - started
+                metadata["gpu_peak_memory_bytes"] = mx.get_peak_memory()
+                if metadata["gpu_peak_memory_bytes"] <= 0 or mx.default_device() != mx.gpu:
+                    raise RuntimeError("GPU inference evidence missing")
+            else:
+                metadata["phase"] = "VAD returned no speech; ASR explicitly skipped"
+                metadata["inference_wall_s"] = None
+                metadata["gpu_peak_memory_bytes"] = None
             metadata["result"] = result
         metadata["status"] = "passed"
     except Exception as error:
@@ -234,6 +341,8 @@ def child(args, name, speech=None):
         command += ["--capability-only"]
     else:
         command += ["--speech", str(speech), "--model-dir", str(args.model_dir.resolve())]
+    if args.vad and speech is not None:
+        command += ["--vad"]
     started = time.monotonic()
     execution_status = "completed"
     try:
@@ -269,6 +378,10 @@ def main():
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--capability-only", action="store_true")
+    parser.add_argument(
+        "--vad", action="store_true", help="Original-timeline Silero VAD clip diagnostic"
+    )
+    parser.add_argument("--baseline-report", type=Path, help="Immutable no-VAD report to compare")
     parser.add_argument("--worker-output", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker_output:
@@ -291,6 +404,13 @@ def main():
         path = args.model_dir / filename
         if path.stat().st_size != size or shared.digest(path) != sha256:
             raise ValueError(f"pinned model mismatch: {filename}")
+    baseline = None
+    if args.baseline_report:
+        if not args.vad or args.baseline_report.resolve().parent == args.output_dir:
+            parser.error("baseline comparison requires --vad and a separate output directory")
+        baseline = json.loads(args.baseline_report.read_text())
+    if (args.output_dir / "report.json").exists():
+        parser.error("existing experiment report is immutable; choose a new output directory")
     speech = shared.read_audio(args.speech)
     silence = b"\0" * 32000
     rng = random.Random(42)  # noqa: S311 - deterministic synthetic audio
@@ -311,7 +431,17 @@ def main():
         "runner_image": os.environ.get("ImageVersion"),  # noqa: SIM112 - runner-defined name
         "run_url": f"https://github.com/{os.environ.get('GITHUB_REPOSITORY')}/actions/runs/{os.environ.get('GITHUB_RUN_ID')}",
         "decoding": "greedy temperature=0, no fallback; beam search unavailable (prior baseline beam=5)",
-        "vad": "unavailable; no VAD or silence compression applied",
+        "vad": {
+            "enabled": args.vad,
+            "method": "Silero original-timeline clips"
+            if args.vad
+            else "none; no silence compression",
+            "options": VAD_OPTIONS if args.vad else None,
+            "maximum_speech_duration_s": "infinity (upstream default)" if args.vad else None,
+            "model_sha256": VAD_MODEL_SHA256 if args.vad else None,
+            "context": "condition_on_previous_text=True within each call; context resets across separate spans",
+            "upstream_clip_workaround": "one original-time clip per full-waveform call avoids 0.4.3 multi-clip seek-reset defect",
+        },
         "alignment": "native word_timestamps=True; cross-attention/CPU DTW; original audio seconds",
         "shift_tolerance_ms": shared.SHIFT_TOLERANCE_MS,
         "boundary_error_rounding_ms": 0.000001,
@@ -348,6 +478,7 @@ def main():
                 inspection["problems"].append(f"recognized text on {name}-only fixture")
             if name not in {"silence", "noise"} and not inspection["words"]:
                 inspection["problems"].append("speech returned no timed words")
+        inspection["problems"].extend(run["worker"].get("clip_interval_problems", []))
         inspection.update(run)
         inspection.update(
             sha256=shared.digest(audio), samples=len(samples) // 2, duration_ms=len(samples) / 32
@@ -369,6 +500,24 @@ def main():
             return 2
     checks = paired_checks(report["fixtures"], len(speech) / 32)
     report["shift_checks"] = checks
+    if baseline:
+        comparisons = {}
+        for name, candidate in report["fixtures"].items():
+            reference = baseline["fixtures"][name]
+            if reference["sha256"] != candidate["sha256"]:
+                raise ValueError(f"baseline waveform differs: {name}")
+            comparisons[name] = shift_check(reference["words"], candidate["words"], 0)
+            if any(item["execution_status"] != "completed" for item in (reference, candidate)):
+                comparisons[name] = {
+                    "status": "unverified",
+                    "reason": "paired inference incomplete",
+                }
+        report["baseline_comparison"] = {
+            "diagnostic_only": True,
+            "baseline_report_sha256": shared.digest(args.baseline_report),
+            "meaning": "same unchanged waveform, VAD versus no VAD; separate from inserted-silence gate",
+            "fixtures": comparisons,
+        }
     statuses = {item["status"] for item in [*report["fixtures"].values(), *checks.values()]}
     report["candidate_structural_status"] = (
         "failed" if "failed" in statuses else "passed" if statuses == {"passed"} else "unverified"

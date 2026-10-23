@@ -89,3 +89,63 @@ def test_fifty_ms_threshold_ignores_sub_nanosecond_float_noise_only():
     assert feasibility.shift_check(base, shifted, 5000)["status"] == "passed"
     shifted[0]["start_ms"] = 5380.001
     assert feasibility.shift_check(base, shifted, 5000)["status"] == "failed"
+
+
+def test_vad_samples_keep_original_seconds_and_order():
+    clips = feasibility.clip_seconds(
+        [{"start": 80000, "end": 240000}, {"start": 320000, "end": 400000}], 500000
+    )
+    assert clips == [[5.0, 15.0], [20.0, 25.0]]
+    assert feasibility.clip_seconds([], 128000) == []
+
+
+@pytest.mark.parametrize(
+    "spans",
+    [
+        [{"start": -1, "end": 16000}],
+        [{"start": 16000, "end": 16000}],
+        [{"start": 0, "end": 160001}],
+        [{"start": 0, "end": 80000}, {"start": 79999, "end": 160000}],
+        [{"start": 0.0, "end": 16000}],
+    ],
+)
+def test_invalid_vad_spans_are_rejected(spans):
+    with pytest.raises(ValueError):
+        feasibility.clip_seconds(spans, 160000)
+
+
+def test_empty_vad_never_calls_asr():
+    def forbidden(*args, **kwargs):
+        pytest.fail("empty clip list must skip ASR; MLX otherwise treats it as full audio")
+
+    result, calls = feasibility.transcribe_clips(object(), [], forbidden, {})
+    assert result == {"text": "", "segments": [], "language": "en"}
+    assert calls == []
+
+
+def test_vad_calls_use_full_audio_and_already_absolute_native_times():
+    audio = object()
+    calls = []
+
+    def fake_transcribe(supplied, **kwargs):
+        assert supplied is audio
+        calls.append(kwargs["clip_timestamps"])
+        start, end = kwargs["clip_timestamps"]
+        return {
+            "text": " word",
+            "segments": [{"text": " word", "words": [word(" word", start + 0.1, end - 0.1)]}],
+            "language": "en",
+        }
+
+    result, _ = feasibility.transcribe_clips(
+        audio, [[5.0, 10.0], [15.0, 20.0]], fake_transcribe, {"language": "en"}
+    )
+    assert calls == [[5.0, 10.0], [15.0, 20.0]]
+    assert result["segments"][1]["words"][0]["start"] == 15.1
+    assert result["text"] == " word word"
+
+
+def test_native_word_leaking_outside_clip_is_diagnosed_without_clamping():
+    native = result([word(" One two.", 4.98, 6.0)])
+    assert feasibility.clip_interval_problems([native], [[5.0, 6.0]])
+    assert native["segments"][0]["words"][0]["start"] == 4.98
