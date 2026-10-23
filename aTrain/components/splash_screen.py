@@ -10,8 +10,7 @@ ATRAIN_LOGO = cast(Path, files("aTrain") / "static" / "images" / "logo.svg")
 
 
 async def splash_screen():
-    # A failed transcribe import can leave torch loaded; retry on the next visit.
-    if "torch" not in sys.modules or "aTrain_core.transcribe" not in sys.modules:
+    if "torch" not in sys.modules.keys():
         with ui.column().classes("gap-0") as splash:
             splash.classes("w-full h-[90vh] items-center justify-center")
             logo = ui.image(ATRAIN_LOGO).props("height=90px width=240px fit=contain")
