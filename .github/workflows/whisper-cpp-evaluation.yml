@@ -2,12 +2,6 @@ name: whisper.cpp runner probe
 
 on:
   workflow_dispatch:
-  # Temporary bootstrap in the testing fork; remove after the first run.
-  push:
-    branches: [feature_whisper_cpp_macos]
-    paths:
-      - .github/workflows/whisper-cpp-evaluation.yml
-      - scripts/whisper_cpp_evaluation/**
 
 permissions:
   contents: read

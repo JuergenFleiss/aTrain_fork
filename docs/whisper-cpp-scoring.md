@@ -90,7 +90,8 @@ sequence in order. Do not discard unmatched words silently. Report reference
 coverage, unmatched reference words, unmatched hypothesis words, and the number
 of boundaries scored. For each matched word, calculate absolute start and end
 boundary error against human reference in milliseconds. Also report each
-system's median and p95 absolute boundary error. Use the same reference-word subset for the baseline and candidate comparison.
+system's median and p95 absolute boundary error. Use the same reference-word
+subset for the baseline and candidate comparison.
 Report timing scores as incomplete when missing or unusable intervals prevent
 scoring that subset; a favorable matched-only score cannot pass the gate.
 
@@ -115,7 +116,11 @@ every targeted case, not only the quality subset. For generated speech
 composites, verify that known inserted silence shifts word times on the original
 timeline and repeat around the known internal gap; do not invent a word-level
 reference when the speech has not been annotated. Inspect the noise case and
-report false positives.
+report false positives. The initial feasibility matrix uses a separately chosen
+maximum 50 ms paired silence-shift tolerance, fixed by the coordinator before
+execution. This is an exploratory stability check, not the human-reference
+median/p95 quality comparison above. Its actual recipes and results are in
+[the evaluation report](whisper-cpp-evaluation.md).
 Nonempty recognized text without usable word timing fails the correctness gate;
 uniformly splitting text to manufacture boundaries is prohibited. Any missing
 fixture or human annotation means its corresponding gate is **unverified**, not

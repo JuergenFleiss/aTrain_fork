@@ -1,0 +1,24 @@
+diff --git a/examples/cli/cli.cpp b/examples/cli/cli.cpp
+index b015319..336cb30 100644
+--- a/examples/cli/cli.cpp
++++ b/examples/cli/cli.cpp
+@@ -766,13 +766,17 @@ static void output_json(
+                         merged.reserve(n);
+                         for (int j = 0; j < n; ) {
+                             auto tok = whisper_full_get_token_data(ctx, i, j);
+-                            merged_token m{ whisper_token_to_str(ctx, tok.id), tok, tok.t1 };
++                            merged_token m{ whisper_token_to_str(ctx, tok.id), tok,
++                                tok.t1 >= 0 ? whisper_full_get_token_t1(ctx, i, j) : tok.t1 };
++                            if (tok.t0 >= 0) {
++                                m.data.t0 = whisper_full_get_token_t0(ctx, i, j);
++                            }
+                             ++j;
+                             while (j < n && utf8_trailing_bytes_needed(m.text) > 0) {
+                                 auto tok_next = whisper_full_get_token_data(ctx, i, j);
+                                 m.text += whisper_token_to_str(ctx, tok_next.id);
+                                 if (tok_next.t1 > -1) {
+-                                    m.t1 = tok_next.t1;
++                                    m.t1 = whisper_full_get_token_t1(ctx, i, j);
+                                 }
+                                 ++j;
+                             }

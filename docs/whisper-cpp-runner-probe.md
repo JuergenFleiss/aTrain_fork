@@ -1,8 +1,10 @@
 # whisper.cpp GitHub macOS runner probe
 
-Status: implementation prepared on 23 October 2026; **no macOS workflow run has
-been observed yet**. CPU inference, Metal compute and Metal inference are all
-unverified. Local classifier tests are not hardware evidence.
+Status: CPU inference, Metal compute and Metal inference **passed** on
+23 October 2026 in [run 39921131494](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39921131494)
+at commit `f1c87a2`. [Logs and structured results](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39921131494/artifacts/12486679257)
+are retained for 14 days. The temporary branch push trigger was removed after
+validation; the workflow now runs manually once installed on the default branch.
 
 This report covers task B of the macOS integration plan. It does not approve
 word timestamps, VAD, quality, performance or production integration.
@@ -106,10 +108,23 @@ Models, caches and audio are excluded.
 
 ## Current validation and open gates
 
-Local Linux validation: actionlint passes, Ruff lint/format passes, and the focused
-offline classifier suite passes (11 tests). Swift compilation, actual helper
-Metal logs and macOS inference remain pending the first workflow run. Record the
-run URL, artifact URL, observed hardware and all three statuses here after it runs.
+Local validation: Ruff lint/format and all 131 unit tests pass, including
+15 focused probe tests. Bandit reports no issues in the application/engine.
+
+Observed runner: `macos-15`, image `20260907.0337.1`, macOS 15.7.9,
+arm64 Apple M1 (Virtual), three CPUs, 7 GiB RAM, Xcode 16.4. The Apple
+Paravirtual device completed all 256 compute checks. The helper completed
+inference with explicit CPU and with Metal arithmetic operation logs. The device
+reports no SIMD-group matrix multiplication support; GPU operation evidence is
+not proof that the entire model executes on GPU or of physical-Mac performance.
+This diagnostic tiny-model run is not a speed benchmark or a timing/VAD test.
+
+The [first run](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39920476617)
+failed classification despite successful execution: the classifier used an
+incorrect function name and required matrix multiplication specifically. Failing
+regression tests reproduced both issues before correction. The final classifier
+requires actual non-noop arithmetic operations and successful inference; CPU
+fallback and initialization alone still fail. The corrected full workflow passed.
 
 If standard runners have no usable Metal device, CPU correctness and packaging
 work can continue; acceleration needs a separately selected capable runner or
