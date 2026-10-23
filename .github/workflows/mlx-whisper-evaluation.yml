@@ -53,7 +53,6 @@ jobs:
           sysctl hw.model hw.machine hw.ncpu hw.memsize > "$PROBE_REPORT/hardware.log"
           system_profiler SPDisplaysDataType -json > "$PROBE_REPORT/displays.json"
           uv --version > "$PROBE_REPORT/uv-version.log"
-          ffmpeg -version > "$PROBE_REPORT/ffmpeg-version.log"
           uv sync --locked --project scripts/mlx_whisper_evaluation --python 3.12 \
             2>&1 | tee "$PROBE_REPORT/uv-sync.log"
           cp scripts/mlx_whisper_evaluation/uv.lock "$PROBE_REPORT/experiment-uv.lock"
