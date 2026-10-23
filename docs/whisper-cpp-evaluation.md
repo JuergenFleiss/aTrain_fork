@@ -1,6 +1,6 @@
 # whisper.cpp helper evaluation
 
-Status: source investigation and small Linux CPU reproduction, 23 October 2026.
+Status: source investigation and Linux CPU feasibility experiments, 23 October 2026.
 Production integration is blocked pending the correctness experiment in
 the integration plan. The CPU timestamp experiment below does not establish timing accuracy or
 production readiness. Separate macOS capability results are recorded in
@@ -38,7 +38,7 @@ it. A moving PR head is not a release pin.
 | Artifact | Immutable repository revision | File | SHA-256 | Bytes / verification |
 | --- | --- | --- | --- | --- |
 | Multilingual tiny | `ggerganov/whisper.cpp@5359861c739e955e79d9a303bcbc70fb988958b1` | `ggml-tiny.bin` | `be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21` | 77,691,713; downloaded and locally hashed |
-| Production-family candidate | same revision | `ggml-large-v3-turbo.bin` | `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69` | 1,624,555,275; HF LFS metadata only; not downloaded/run |
+| Production-family candidate | same revision | `ggml-large-v3-turbo.bin` | `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69` | 1,624,555,275; downloaded, locally hashed and CPU-tested (repeat below) |
 | Silero VAD 5.1.2 | `ggml-org/whisper-vad@9ffd54a1e1ee413ddf265af9913beaf518d1639b` | `ggml-silero-v5.1.2.bin` | `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf` | 885,098; downloaded and locally hashed |
 
 Checksums/size come from pinned HF tree metadata for
@@ -52,7 +52,7 @@ and vendored dependency notices when packaging.
 The upstream [model guide](https://github.com/ggml-org/whisper.cpp/blob/d1be6fde11ac6e0407606b4e42fe72d34add8037/models/README.md)
 says its GGML files are converted from OpenAI Whisper using
 `models/convert-pt-to-ggml.py`. This experiment downloads the preconverted,
-non-quantized tiny artifact; it does not reproduce the conversion. The precise
+non-quantized tiny and large-v3-turbo artifacts; it does not reproduce the conversion. The precise
 original checkpoint hash, converter revision and historical conversion command
 for these HF blobs have not been independently established. A pinned HF blob is
 reproducible download provenance, not proof of reproducible conversion. Resolve
@@ -265,7 +265,7 @@ fixture outputs, logs, patch and machine-readable measurements with immutable ru
 links before its result is called reproducible CI evidence. This report alone
 records a narrow defect and repair, not a completed feasibility comparison.
 
-## Task D: minimal CPU feasibility result
+## Task D: initial tiny CPU feasibility result
 
 **Stop before task E.** The narrow ordinary-VAD patch fixes serialization, but
 this pinned tiny configuration fails the fixed 50 ms inserted-silence shift
@@ -371,9 +371,9 @@ artifact URL exists yet for D. Helper binary hashes for these local builds are:
 The full production gate remains blocked by observed interval instability and
 unverified human-reference quality, broader multilingual grouping, real long
 interviews/turns, Metal with timing/VAD, minimum OS/runtime, packaging and
-cleanup. The production-family model and faster-whisper baseline comparison
-were not run: this smoke configuration already misses the structural gate, so
-large downloads/benchmarks would not justify task E. A separately preregistered
+cleanup. At this initial tiny stage, the production-family model and faster-whisper
+baseline comparison had not run. The requested production-family repeat is
+recorded separately below; neither result justifies task E. A separately preregistered
 experiment with a better configuration may reopen D; do not silently relax this
 run's threshold or ship this configuration.
 
@@ -388,8 +388,87 @@ No application code, model registry, dependencies or packaging were changed.
 
 The testing branch is `feature_whisper_cpp_macos` in
 [JuergenFleiss/aTrain_fork](https://github.com/JuergenFleiss/aTrain_fork/tree/feature_whisper_cpp_macos).
-Ruff lint/format, 131 offline unit tests and application/engine Bandit checks
+Ruff lint/format, 134 offline unit tests and application/engine Bandit checks
 passed. Existing core/UI suites were not run because application code is
 unchanged; the real-helper CPU experiment and macOS workflow are the relevant
 additional execution checks. No performance, signed-package or macOS 14 runtime
 claim is made.
+
+## Task D: requested large-v3-turbo CPU repeat
+
+This repeat tests the production-family candidate with the same protocol.
+The non-quantized `ggml-large-v3-turbo.bin` at the HF revision/hash above was
+downloaded and its full SHA-256 verified locally. Its bytes reside in
+`/home/juergen/github/aTrain/.cache/whisper-cpp-evaluation/` (gitignored disk
+storage; `/tmp` on this host is RAM-backed). Both existing pinned helper builds
+were reused. The German input uses the explicit left-channel transform above.
+No inference configuration or 50 ms threshold was relaxed.
+
+The harness now accepts `--model-preset large-v3-turbo`, selecting that model's
+hash and DTW preset `large.v3.turbo`; tiny remains the default. Add this option
+to the earlier command, supply the turbo model path, and use a fresh output
+directory. Each turbo invocation has a 900-second timeout; timeout/output/helper
+errors are separately recorded and incomplete paired timing is unverified.
+All **45 real turbo CPU invocations completed without timeout or execution
+error**. The script exited 1 because its candidate correctness checks failed.
+The tests confirm actual helper argv/preset selection and timeout classification;
+their fake helpers are not timing evidence.
+
+For patched ordinary VAD, all English per-file intervals were positive, bounded
+and ordered, but the paired timeline checks still failed. Errors below combine
+start and end boundaries, in milliseconds. The original time-window partition is
+preserved for comparison with the tiny run:
+
+| Case | Tiny median / max error | Turbo median / max error | Turbo matched / unmatched reference / unmatched candidate words |
+| --- | --- | --- | --- |
+| 5 s leading silence | 20 / 150 | 90 / 1840 | 22 / 0 / 0 |
+| 5 s trailing silence | 0 / 0 | 0 / 0 | 22 / 0 / 0 |
+| 25 s prefix, original timeline crosses 30 s | 10 / 150 | 10 / 150 | 22 / 0 / 0 |
+| Internal gap, first window | 0 / 110 | 20 / 1380 | 22 / 0 / 1 |
+| Internal gap, second window | 210 / 1510 | 490 / 1690 | 21 / 1 / 0 |
+
+The internal window counts **do not mean text was lost**. The turbo composite's
+entire normalized 44-word sequence equals its base 22-word sequence repeated
+exactly twice. Its second-copy ` And` is incorrectly timed 10410–10590 ms,
+placing it in the first window. The base word is 330–530 ms; adding the known
+16000 ms composite offset would give 16330–16530 ms. A separate diagnostic,
+performed only after verifying exact equality of the complete repeated word
+sequence, splits by lexical order: all 22 second-copy words match with no
+unmatched words, median error 500 ms and maximum error **5940 ms**. The original
+window scores above remain unchanged. This is a concrete timing failure on
+identical speech, independent of a human accuracy reference.
+
+The audible German left-channel case also fails interval ordering after the
+patch: ` Junge,` is 9250–9260 ms, ` du` is 9250–9260 ms, and ` wirst` is
+9250–9340 ms. The library's positive-duration minimum has turned coincident raw
+boundaries into overlapping provisional words. The harness preserves and reports
+them; it does not clamp or redistribute them. Japanese returns one nonempty
+UTF-8 word with a valid interval, which still does not establish multilingual
+lexical grouping. VAD silence/noise cases return no words. The unmodified
+no-VAD configuration has zero-duration words and emits text on silence/noise;
+these separate failures are retained too.
+
+Enabling DTW with `large.v3.turbo` and Flash Attention disabled completed and
+reported `dtw = 1`. Across all nine fixtures, its ordinary text/interval results
+are identical to the corresponding ordinary-VAD configuration. The separate
+first text DTW point is 22 centiseconds in both the base and 5-second-prefixed
+VAD cases, confirming that point remains on the compressed timeline. No DTW
+start/end word interval has been derived or claimed. The 25-second-prefix case
+stresses the original timeline; with VAD removing silence, it does not establish
+that a word crosses an internal decoder chunk boundary.
+
+Turbo report and raw JSON/logs are retained locally at
+`/tmp/atrain-whisper-a-turbo-cpu-results/report.json`; the exact-sequence companion
+is `paired-sequence-diagnostic.json` in that directory. No outputs or models were
+published. There is no turbo workflow/artifact URL. Model identity, helper hashes,
+commands, fixture hashes/durations, per-run wall time, interval failures, paired
+errors and unmatched counts are in the report. There was one run per
+configuration/case, so no repeated-run performance claim is made.
+
+**This tested turbo CLI/ordinary-timing/VAD configuration also fails the gate;
+task E remains blocked.** That verdict concerns the measured configuration and
+does not establish that every possible whisper.cpp model or alignment method
+fails. A different method needs a separate demonstrated interval contract and
+experiment. Faster-whisper quality comparison, human timing accuracy, turbo on
+Metal, long interviews, actual word-crossing decoder boundaries and release
+checks remain unverified; none is needed to explain the observed failures above.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small, offline CPU timestamp experiment for pinned multilingual tiny v1.9.5.
+"""Small, offline CPU timestamp experiment for pinned multilingual Whisper models and v1.9.5.
 
 This deliberately reports unverified word grouping/quality rather than claiming
 that its provisional English/German whitespace grouping is a production parser.
@@ -18,6 +18,7 @@ import math
 import platform
 import random
 import re
+import statistics
 import struct
 import subprocess
 import time
@@ -25,7 +26,18 @@ import wave
 from pathlib import Path
 
 PIN = "d1be6fde11ac6e0407606b4e42fe72d34add8037"
-MODEL_SHA256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+MODELS = {
+    "tiny": {
+        "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        "dtw": "tiny",
+        "timeout_s": 120,
+    },
+    "large-v3-turbo": {
+        "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        "dtw": "large.v3.turbo",
+        "timeout_s": 900,
+    },
+}
 VAD_SHA256 = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf"
 SHIFT_TOLERANCE_MS = 50
 
@@ -72,7 +84,7 @@ def intervals(result: dict, duration_ms: float) -> dict:
         token_text = ""
         group = None
         for token in segment.get("tokens", []):
-            # Multilingual tiny uses EOT 50257. This experiment pins that model.
+            # Both pinned multilingual models use EOT 50257.
             if token["id"] >= 50257:
                 continue
             text = token["text"]
@@ -140,6 +152,7 @@ def shift_check(reference: list[dict], candidate: list[dict], shift_ms: int) -> 
         "unmatched_candidate_words": unmatched_hyp,
         "boundary_errors_ms": errors,
         "max_boundary_error_ms": max(errors, default=None),
+        "median_boundary_error_ms": statistics.median(errors) if errors else None,
         "status": "passed"
         if errors and max(errors) <= SHIFT_TOLERANCE_MS and not unmatched_ref and not unmatched_hyp
         else "failed",
@@ -151,6 +164,10 @@ def main() -> int:
     parser.add_argument("--upstream", type=Path, required=True)
     parser.add_argument("--patched", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
+    parser.add_argument("--model-preset", choices=MODELS, default="tiny")
+    parser.add_argument(
+        "--timeout-seconds", type=int, help="Per inference; default tiny=120, turbo=900"
+    )
     parser.add_argument("--vad-model", type=Path, required=True)
     parser.add_argument(
         "--speech", type=Path, required=True, help="Public English PCM16 mono 16 kHz WAV"
@@ -159,7 +176,11 @@ def main() -> int:
     parser.add_argument("--japanese", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
-    for path, expected in ((args.model, MODEL_SHA256), (args.vad_model, VAD_SHA256)):
+    model = MODELS[args.model_preset]
+    timeout_s = args.timeout_seconds if args.timeout_seconds is not None else model["timeout_s"]
+    if timeout_s <= 0:
+        parser.error("--timeout-seconds must be positive")
+    for path, expected in ((args.model, model["sha256"]), (args.vad_model, VAD_SHA256)):
         if digest(path) != expected:
             raise ValueError(f"Pinned model checksum mismatch: {path}")
     out = args.output_dir.resolve()
@@ -197,6 +218,9 @@ def main() -> int:
         "source_commit": PIN,
         "host": platform.platform(),
         "machine": platform.machine(),
+        "model_preset": args.model_preset,
+        "dtw_preset": model["dtw"],
+        "timeout_s": timeout_s,
         "model_sha256": digest(args.model),
         "vad_sha256": digest(args.vad_model),
         "helper_hashes": {
@@ -250,15 +274,16 @@ def main() -> int:
             if vad:
                 command += ["--vad", "-vm", str(args.vad_model.resolve())]
             if dtw:
-                command += ["--dtw", "tiny"]
+                command += ["--dtw", model["dtw"]]
             started = time.monotonic()
+            execution_status = "completed"
             try:
                 with (
                     prefix.with_suffix(".stdout").open("wb") as stdout,
                     prefix.with_suffix(".log").open("wb") as stderr,
                 ):
                     process = subprocess.run(
-                        command, stdout=stdout, stderr=stderr, timeout=120, check=False
+                        command, stdout=stdout, stderr=stderr, timeout=timeout_s, check=False
                     )
                 elapsed = time.monotonic() - started
                 parsed = (
@@ -268,16 +293,30 @@ def main() -> int:
                 )
                 inspection = intervals(parsed, fixture["duration_ms"])
                 if process.returncode:
+                    execution_status = "helper_error"
                     inspection["problems"].append(f"helper exit {process.returncode}")
             except (subprocess.TimeoutExpired, ValueError, KeyError, OSError, TypeError) as exc:
                 elapsed = time.monotonic() - started
+                execution_status = (
+                    "timeout" if isinstance(exc, subprocess.TimeoutExpired) else "output_error"
+                )
                 inspection = {"text": "", "words": [], "problems": [str(exc)], "dtw_points": []}
             if name in {"silence", "noise"} and inspection["words"]:
                 inspection["problems"].append(f"recognized words on {name}-only fixture")
-            if name not in {"silence", "noise"} and not inspection["words"]:
+            if (
+                execution_status == "completed"
+                and name not in {"silence", "noise"}
+                and not inspection["words"]
+            ):
                 inspection["problems"].append("speech fixture returned no timed words")
-            inspection.update(command=command, wall_s=elapsed)
-            inspection["status"] = "failed" if inspection["problems"] else "passed"
+            inspection.update(command=command, wall_s=elapsed, execution_status=execution_status)
+            inspection["status"] = (
+                "error"
+                if execution_status != "completed"
+                else "failed"
+                if inspection["problems"]
+                else "passed"
+            )
             results[name] = inspection
             print(f"{config}/{name}: {inspection['status']}", flush=True)
         base = results["base"]["words"]
@@ -294,14 +333,24 @@ def main() -> int:
         shifts["internal-second"] = shift_check(
             base, [word for word in internal if word["start_ms"] >= split_ms], int(split_ms)
         )
+        for name in shifts:
+            case = "internal" if name.startswith("internal-") else name
+            if any(results[key]["execution_status"] != "completed" for key in ("base", case)):
+                shifts[name] = {
+                    "status": "unverified",
+                    "reason": "paired helper execution incomplete",
+                }
         report["runs"][config] = {"fixtures": results, "shift_checks": shifts}
     candidate = report["runs"]["patched-ordinary-vad"]
+    candidate_statuses = {
+        item["status"]
+        for item in [*candidate["fixtures"].values(), *candidate["shift_checks"].values()]
+    }
     report["ordinary_candidate_structural_status"] = (
         "failed"
-        if any(
-            item["status"] == "failed"
-            for item in [*candidate["fixtures"].values(), *candidate["shift_checks"].values()]
-        )
+        if "failed" in candidate_statuses
+        else "unverified"
+        if candidate_statuses != {"passed"}
         else "passed"
     )
     report["production_correctness_gate"] = "blocked"
@@ -309,7 +358,7 @@ def main() -> int:
     print(
         f"Candidate structural gate: {report['ordinary_candidate_structural_status']}; full production gate blocked; report: {out / 'report.json'}"
     )
-    return 1 if report["ordinary_candidate_structural_status"] == "failed" else 0
+    return 0 if report["ordinary_candidate_structural_status"] == "passed" else 1
 
 
 if __name__ == "__main__":
