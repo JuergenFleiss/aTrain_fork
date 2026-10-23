@@ -1,0 +1,76 @@
+name: whisper.cpp runner probe
+
+on:
+  workflow_dispatch:
+  # Temporary bootstrap in the testing fork; remove after the first run.
+  push:
+    branches: [feature_whisper_cpp_macos]
+    paths:
+      - .github/workflows/whisper-cpp-evaluation.yml
+      - scripts/whisper_cpp_evaluation/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: whisper-cpp-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    # Deliberately no paid/larger-runner option in this initial probe.
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Prepare report directory
+        run: |
+          echo "PROBE_REPORT=$RUNNER_TEMP/whisper-cpp-report" >> "$GITHUB_ENV"
+          echo "ATRAIN_USER_DIR=$RUNNER_TEMP/atrain-probe-user" >> "$GITHUB_ENV"
+          echo "HF_HOME=$RUNNER_TEMP/atrain-probe-hf" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/whisper-cpp-report"
+
+      - name: Checkout pinned upstream
+        uses: actions/checkout@v7
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: d1be6fde11ac6e0407606b4e42fe72d34add8037 # v1.9.5
+          path: .whisper-cpp-source
+          persist-credentials: false
+
+      - name: Build upstream CLI with Metal, without Core ML
+        timeout-minutes: 15
+        run: |
+          set -o pipefail
+          cmake -S .whisper-cpp-source -B "$RUNNER_TEMP/whisper-cpp-build" \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_CXX_FLAGS=-DWHISPER_DEBUG \
+            -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DWHISPER_COREML=OFF -DWHISPER_BUILD_TESTS=OFF \
+            2>&1 | tee "$PROBE_REPORT/configure.log"
+          cmake --build "$RUNNER_TEMP/whisper-cpp-build" --config Release \
+            --target whisper-cli --parallel 3 2>&1 | tee "$PROBE_REPORT/build.log"
+          cp "$RUNNER_TEMP/whisper-cpp-build/CMakeCache.txt" "$PROBE_REPORT/"
+
+      - name: Probe hardware and run CPU and Metal inference separately
+        if: always()
+        timeout-minutes: 10
+        run: |
+          python3 scripts/whisper_cpp_evaluation/probe.py \
+            --source .whisper-cpp-source \
+            --helper "$RUNNER_TEMP/whisper-cpp-build/bin/whisper-cli" \
+            --report "$PROBE_REPORT" --cache "$HF_HOME"
+
+      - name: Retain public-fixture results even after failure
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: whisper-cpp-runner-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROBE_REPORT }}
+          retention-days: 14
+          if-no-files-found: warn
