@@ -2,9 +2,6 @@ name: MLX Whisper timestamp evaluation
 
 on:
   workflow_dispatch:
-  # Temporary trigger for the testing fork; remove after collecting the evidence.
-  push:
-    branches: [feature_mlx_macos_evaluation]
 
 permissions:
   contents: read

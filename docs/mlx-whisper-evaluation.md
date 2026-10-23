@@ -253,8 +253,9 @@ There is a source-level trap in mlx-whisper 0.4.3: its multi-clip loop does not
 reset `seek` to each subsequent `seek_clip_start`. Passing several disjoint
 `clip_timestamps` pairs in one call can therefore process the intervening gap.
 For this diagnostic, use **one call per VAD span against the full original
-waveform**, with `clip_timestamps=[start / 16000, end / 16000]` and
-`condition_on_previous_text=False`. The MLX timestamps are already original
+waveform**, with `clip_timestamps=[start / 16000, end / 16000]`. The final run
+retains `condition_on_previous_text=True` within each call to match the no-VAD
+baseline; context resets between calls. The MLX timestamps are already original
 seconds: combine the results without adding offsets, compressing the waveform,
 or applying `SpeechTimestampsMap`. Clip coordinates round to 10 ms mel frames;
 word alignment still uses its native grid and heuristics. Report out-of-span or
@@ -269,3 +270,46 @@ correctness diagnostic with disclosed overhead, not a performance integration.
 If VAD excludes quiet words, count them as missing; do not score only the words
 that survive. Keep no-VAD and VAD results separately, retain the unchanged
 50 ms transformation tolerance, and test the silence/noise cases in both modes.
+
+## Final VAD diagnostic result
+
+[Run 39928971580](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39928971580)
+and its [structured artifact](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39928971580/artifacts/12491201177)
+contain separate no-VAD and VAD reports using identical decoded PCM. The
+no-VAD result reproduced the first run's text and shift measurements. All seven
+VAD cases completed under network denial: five speech fixtures performed GPU
+ASR, including two separate calls for the repeated recording; silence and noise
+returned no VAD spans and explicitly skipped ASR. ONNX Runtime 1.27.0 used CPU
+VAD with the unchanged defaults above.
+
+Every returned speech interval was positive, ordered, within the original
+duration and within its effective clip, without timestamp clamping. All speech
+cases retained the complete normalized 22-word sequence, or 44 words for the repeated case.
+VAD removed both non-speech hallucinations and recovered the opening text lost
+with a 25 s silence prefix. The remaining transformation check is:
+
+| VAD transformation | Maximum boundary shift error | Median | 50 ms check |
+| --- | ---: | ---: | --- |
+| Add 5 s leading silence | 340 ms | 0 ms | Failed |
+| Add 5 s trailing silence | 0 ms | 0 ms | Passed |
+| Add 25 s leading silence | 560 ms | 0 ms | Failed |
+| First copy before internal gap | 0 ms | 0 ms | Passed |
+| Second copy after internal gap | 490 ms | 10 ms | Failed |
+
+All words matched in these VAD comparisons. Absolute positions retained the
+inserted silence offsets; the evidence does not show a collapsed VAD timeline
+or an accumulating offset error. It does show that clipping can change native
+alignment: comparing VAD with no VAD on the same waveform changed boundaries
+by up to 80 ms for the leading case and 560 ms for the trailing and repeated
+cases. The 25 s prefix comparison also changed text, so its matched-only 680 ms
+maximum cannot be interpreted as complete timing coverage.
+
+The fixed 50 ms test is exploratory invariance against model output, not human
+word-boundary accuracy. The VAD candidate still fails that check; production
+correctness remains blocked pending human references and broader recordings.
+This experiment makes no speed or production-quality claim. Local validation
+passed all 152 offline unit tests, Ruff and actionlint. Production code and its
+dependency files remain untouched. The experiment workflow's temporary branch
+trigger was removed after validation. Manual dispatch requires this workflow on
+the repository default branch; until then, repeating a branch experiment requires
+the same narrowly scoped temporary trigger. The default branch was not changed.
