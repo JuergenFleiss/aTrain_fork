@@ -1,0 +1,96 @@
+name: MLX Whisper timestamp evaluation
+
+on:
+  workflow_dispatch:
+  # Temporary trigger for the testing fork; remove after collecting the evidence.
+  push:
+    branches: [feature_mlx_macos_evaluation]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mlx-whisper-evaluation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    if: github.repository == 'JuergenFleiss/aTrain_fork'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      HF_HUB_OFFLINE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      DO_NOT_TRACK: '1'
+    steps:
+      - name: Initialize isolated experiment directories
+        run: |
+          echo "PROBE_WORK=$RUNNER_TEMP/mlx-whisper-work" >> "$GITHUB_ENV"
+          echo "PROBE_REPORT=$RUNNER_TEMP/mlx-whisper-report" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$RUNNER_TEMP/mlx-uv-cache" >> "$GITHUB_ENV"
+          echo "UV_PROJECT_ENVIRONMENT=$RUNNER_TEMP/mlx-venv" >> "$GITHUB_ENV"
+          echo "ATRAIN_USER_DIR=$RUNNER_TEMP/mlx-atrain-user" >> "$GITHUB_ENV"
+          echo "HF_HOME=$RUNNER_TEMP/mlx-hf" >> "$GITHUB_ENV"
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/mlx-cache" >> "$GITHUB_ENV"
+          echo "NUMBA_CACHE_DIR=$RUNNER_TEMP/mlx-numba" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: '0.11.17'
+          enable-cache: false
+
+      - name: Record runner and install only isolated locked experiment dependencies
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          mkdir -p "$PROBE_WORK" "$PROBE_REPORT"
+          sw_vers > "$PROBE_REPORT/os.log"
+          uname -a > "$PROBE_REPORT/architecture.log"
+          sysctl hw.model hw.machine hw.ncpu hw.memsize > "$PROBE_REPORT/hardware.log"
+          system_profiler SPDisplaysDataType -json > "$PROBE_REPORT/displays.json"
+          uv --version > "$PROBE_REPORT/uv-version.log"
+          ffmpeg -version > "$PROBE_REPORT/ffmpeg-version.log"
+          uv sync --locked --project scripts/mlx_whisper_evaluation --python 3.12 \
+            2>&1 | tee "$PROBE_REPORT/uv-sync.log"
+          cp scripts/mlx_whisper_evaluation/uv.lock "$PROBE_REPORT/experiment-uv.lock"
+
+      - name: Verify actual sandboxed MLX GPU arithmetic before downloading model
+        timeout-minutes: 5
+        run: |
+          set -o pipefail
+          uv run --no-sync --project scripts/mlx_whisper_evaluation \
+            python scripts/mlx_whisper_evaluation/feasibility.py \
+            --capability-only --work-dir "$PROBE_WORK" --output-dir "$PROBE_REPORT" \
+            2>&1 | tee "$PROBE_REPORT/capability-parent.log"
+
+      - name: Prepare pinned model and public speech assets
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          uv run --no-sync --project scripts/mlx_whisper_evaluation \
+            python scripts/mlx_whisper_evaluation/prepare.py \
+            --work-dir "$PROBE_WORK" --output-dir "$PROBE_REPORT" \
+            2>&1 | tee "$PROBE_REPORT/prepare.log"
+
+      - name: Evaluate native word timestamps with network denied
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          uv run --no-sync --project scripts/mlx_whisper_evaluation \
+            python scripts/mlx_whisper_evaluation/feasibility.py \
+            --model-dir "$PROBE_WORK/model" --speech "$PROBE_WORK/jfk.wav" \
+            --work-dir "$PROBE_WORK" --output-dir "$PROBE_REPORT" \
+            2>&1 | tee "$PROBE_REPORT/evaluation.log"
+
+      - name: Retain logs and public-fixture JSON, excluding audio and models
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mlx-whisper-evaluation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.PROBE_REPORT }}
+          retention-days: 14
+          if-no-files-found: warn
