@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>aTrain Transcription Flow</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1c2330; --muted: #5d6778; --line: #d5dae3;
+    --gui: #2f6fd6; --core: #1d8a5a; --ctx: #8a93a3; --new: #1d8a5a; --chg: #b36b00;
+    --warn: #fff6e0; --warn-line: #e6c36a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151b; --card:#1b2029; --ink:#e7eaf0; --muted:#9aa4b5; --line:#303847;
+            --gui:#6ea0f5; --core:#4cc590; --ctx:#7d8799; --new:#4cc590; --chg:#e0a040;
+            --warn:#2a2412; --warn-line:#6b5a22; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:15px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:28px 16px 40px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  .legend { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:13px; color:var(--muted);
+            background:var(--card); border:1px solid var(--line); border-radius:8px;
+            padding:10px 14px; margin-bottom:22px; }
+  .legend b { color:var(--ink); font-weight:600; }
+  code, .mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; font-size:12.5px; }
+  .step { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .head { display:flex; align-items:center; gap:12px; padding:11px 16px;
+          border-bottom:1px solid var(--line); }
+  .num { flex:none; width:28px; height:28px; border-radius:50%; background:var(--ink); color:var(--bg);
+         display:grid; place-items:center; font-weight:700; font-size:14px; }
+  .head h2 { margin:0; font-size:17px; }
+  .head .out { margin-left:auto; font-size:12.5px; color:var(--muted); text-align:right; }
+  .body { display:grid; grid-template-columns: minmax(0,5fr) minmax(0,7fr); }
+  .what { padding:14px 16px; border-right:1px solid var(--line); }
+  .what ol, .what ul { margin:0; padding-left:18px; }
+  .what li { margin:2px 0; }
+  .files { padding:10px 16px 14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; font-weight:600; color:var(--muted); font-size:11.5px;
+       text-transform:uppercase; letter-spacing:.04em; padding:3px 6px 5px; }
+  td { padding:3px 6px; border-top:1px solid var(--line); vertical-align:top; }
+  td.n { white-space:nowrap; text-align:right; }
+  td.fn { word-break:break-word; }
+  .tag { display:inline-block; font-size:10.5px; font-weight:700; padding:0 5px; border-radius:4px;
+         border:1px solid currentColor; margin-left:5px; vertical-align:1px; }
+  .new { color:var(--new); } .chg { color:var(--chg); }
+  .gui { color:var(--gui); } .core { color:var(--core); }
+  tr.ctx td { color:var(--ctx); }
+  .sub-row td { border-top:none; padding-top:0; color:var(--muted); font-size:12px; }
+  .review { background:var(--warn); border-top:1px solid var(--warn-line); padding:9px 16px;
+            font-size:13px; }
+  .review b { font-size:11.5px; text-transform:uppercase; letter-spacing:.05em; }
+  .review ul { margin:3px 0 0; padding-left:18px; }
+  .arrow { text-align:center; color:var(--muted); line-height:1.5; padding:6px 0; font-size:13px; }
+  .arrow span { display:block; font-size:18px; line-height:1.2; }
+  .boundary { text-align:center; font-size:12px; color:var(--muted); margin:2px 0;
+              border-top:2px dashed var(--line); padding-top:4px; }
+  .states { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin:10px 0 0; font-size:12.5px; }
+  .st { border:1px solid var(--line); border-radius:999px; padding:1px 9px; background:var(--bg); }
+  @media (max-width:760px) {
+    .body { grid-template-columns:1fr; } .what { border-right:none; border-bottom:1px solid var(--line); }
+    .head .out { display:none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>How a file becomes a transcript</h1>
+  <p class="sub">Review map for the queue PR: <code>develop...feature/queue-ui</code>, 58 files, +4139 / −858.
+     Read the final state of each file; use the commits to see why it changed.</p>
+
+  <div class="legend">
+    <span><b>Stack commits</b></span>
+    <span><b>A</b> <code>5221c30</code> job model, store, lock</span>
+    <span><b>B</b> <code>663299c</code> runner (draft)</span>
+    <span><b>C</b> <code>d6d612c</code> queue service, single files</span>
+    <span><b>D</b> <code>ebeba8c</code> folder / multi-file input, queue view</span>
+    <span class="gui"><b>aTrain/</b> needs NiceGUI</span>
+    <span class="core"><b>aTrain_core/</b> needs neither NiceGUI nor torch to import</span>
+  </div>
+
+  <!-- 1 -->
+  <section class="step">
+    <div class="head"><div class="num">1</div><h2>Input files</h2>
+      <div class="out">out: <code>list[Path]</code> &middot; no job yet</div></div>
+    <div class="body">
+      <div class="what"><ul>
+        <li>Pick, folder, Linux drop, browser upload</li>
+        <li>Uploads are saved to <code>queue/uploads/&lt;id&gt;/</code>, so they are plain paths too</li>
+        <li>A folder replaces the selection; files are added to it</li>
+      </ul></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn gui"><code>aTrain/utils/file_selection.py</code><span class="tag new">NEW</span></td><td class="n">+183</td><td><code>95e6c05</code></td></tr>
+        <tr><td class="fn gui"><code>aTrain/utils/linux_drop.py</code><span class="tag new">NEW</span></td><td class="n">+127</td><td><code>95e6c05</code></td></tr>
+        <tr><td class="fn gui"><code>aTrain/utils/flatpak_portal.py</code><span class="tag new">NEW</span></td><td class="n">+124</td><td><code>95e6c05</code></td></tr>
+        <tr><td class="fn gui"><code>aTrain/components/settings/file.py</code><span class="tag chg">CHG</span></td><td class="n">+125 −126</td><td>D, <code>95e6c05</code></td></tr>
+        <tr><td class="fn gui"><code>aTrain/utils/transcription.py</code><span class="tag chg">CHG</span></td><td class="n">+57 −117</td><td>D, <code>ccf74b2</code></td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>Uploads are deleted only if aTrain created them (<code>_discard</code>); a user's own file is never touched</li>
+      <li>Flatpak: an unreadable drop falls back to the portal chooser. Linux drag and drop is a must-have: test it on Linux</li>
+      <li><code>95e6c05</code> adds three whole files outside the stack commits: review it as a feature</li>
+    </ul></div>
+  </section>
+
+  <div class="arrow"><span>↓</span>[ Add to queue ] &middot; settings snapshot (model, language, speakers, advanced)<br>
+    <code>pages/transcribe.py</code> +40 −38 (C, D, <code>9cf9558</code>): label is "Transcribe" when the queue is empty; disabled while uploading or locked</div>
+
+  <!-- 2 -->
+  <section class="step">
+    <div class="head"><div class="num">2</div><h2>Job created</h2>
+      <div class="out">out: job, status <code>QUEUED</code> in <code>queue.json</code></div></div>
+    <div class="body">
+      <div class="what"><ol>
+        <li>Validate model, language, device</li>
+        <li>One frozen <code>JobSpec</code> per file, with every setting</li>
+        <li>Written to <code>queue.json</code> atomically</li>
+      </ol></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn gui"><code>aTrain/utils/queue_ui.py</code><span class="tag new">NEW</span></td><td class="n">+77</td><td>C</td></tr>
+        <tr><td class="fn core"><code>aTrain_core/settings.py</code><span class="tag chg">CHG</span></td><td class="n">+8 −6</td><td><code>64da3a1</code> (<code>validate_job_settings</code>)</td></tr>
+        <tr><td class="fn core"><code>aTrain_core/jobs.py</code><span class="tag new">NEW</span></td><td class="n">+272</td><td>A, <code>dc4779e</code>, <code>ccf74b2</code></td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>Validation happens before anything is created</li>
+      <li>Settings are a snapshot at click time; later changes don't touch queued jobs</li>
+      <li>An unreadable <code>queue.json</code> is moved aside, not deleted</li>
+    </ul></div>
+  </section>
+
+  <div class="boundary">above: aTrain/ &nbsp;·&nbsp; below: aTrain_core/</div>
+  <div class="arrow"><span>↓</span></div>
+
+  <!-- 3 -->
+  <section class="step">
+    <div class="head"><div class="num">3</div><h2>Scheduler</h2>
+      <div class="out">out: a child process and its event stream</div></div>
+    <div class="body">
+      <div class="what"><ul>
+        <li>One job at a time, in queue order</li>
+        <li>Per job: transcription, then diarization if speaker detection is on</li>
+        <li>Each phase is its own spawned child process</li>
+        <li>Status <code>RUNNING</code> is saved before the child starts</li>
+      </ul></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn core"><code>aTrain_core/queue_service.py</code><span class="tag new">NEW</span><br><code>_scheduler</code>, <code>_run_job</code>, <code>_run_phase</code></td><td class="n">+315</td><td>C, <code>dc4779e</code>, <code>69b0a8f</code>, <code>ccf74b2</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/runner.py</code><span class="tag new">NEW</span><br><code>PhaseJob</code>, <code>_launch</code> (spawn)</td><td class="n">+372</td><td>B, <code>dc4779e</code>, <code>45db5aa</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/jobs.py</code> &middot; <code>QueueLock</code></td><td class="n">(see 2)</td><td>A</td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>Read <code>queue_service.py</code> first: it decides what runs; <code>runner.py</code> is what it launches</li>
+      <li>A second aTrain window gets a banner and never runs the queue unlocked</li>
+      <li>Commands change state without awaiting in between, so they can't interleave with starting a job</li>
+    </ul></div>
+  </section>
+
+  <div class="arrow"><span>↓</span></div>
+
+  <!-- 4 -->
+  <section class="step">
+    <div class="head"><div class="num">4</div><h2>Phase 1 child: transcribe</h2>
+      <div class="out">out: <code>raw_transcript.json</code></div></div>
+    <div class="body">
+      <div class="what"><ol>
+        <li>Checkpoint present and source unchanged? Skip the model</li>
+        <li>Load model, decode audio, transcribe (faster-whisper or CrisperWhisper: one segment per word)</li>
+        <li>Save checkpoint, tied to source size and mtime</li>
+        <li>No speaker detection: go to step 6</li>
+      </ol></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn core"><code>aTrain_core/runner.py</code><br><code>_run_phase1_job</code>, <code>EventProgress</code>, <code>_child_main</code></td><td class="n">+372</td><td>B, <code>dc4779e</code>, <code>45db5aa</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/outputs.py</code><span class="tag chg">CHG</span><br><code>write_checkpoint</code>, <code>read_checkpoint</code></td><td class="n">+74 −45</td><td><code>64da3a1</code> and others</td></tr>
+        <tr class="ctx"><td class="fn"><code>aTrain_core/engine.py</code> (context)</td><td class="n">+4 −22</td><td><code>45db5aa</code>, <code>ef94f80</code></td></tr>
+        <tr class="ctx"><td class="fn"><code>aTrain_core/backends/</code> (context)</td><td class="n">+1 −1</td><td>engine split, already in develop</td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>A source file that changes while it is decoded raises <code>SourceChangedError</code>: no stale checkpoint</li>
+      <li>The child ends with <code>os._exit</code> (faster-whisper hangs at shutdown), which also frees the model</li>
+      <li><code>ef94f80</code> removes the transcription token cap: a behaviour change in the engine</li>
+    </ul></div>
+  </section>
+
+  <div class="arrow"><span>↓</span>only if speaker detection is on</div>
+
+  <!-- 5 -->
+  <section class="step">
+    <div class="head"><div class="num">5</div><h2>Phase 2 child: speaker detection</h2>
+      <div class="out">out: <code>diarized_transcript.json</code></div></div>
+    <div class="body">
+      <div class="what"><ol>
+        <li>Raw checkpoint must exist, else <code>CheckpointMissingError</code></li>
+        <li>Diarized checkpoint present? Skip pyannote</li>
+        <li>Load pyannote, decode audio again, label every word with a speaker</li>
+        <li>Save checkpoint</li>
+      </ol></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn core"><code>aTrain_core/runner.py</code> &middot; <code>_run_phase2_job</code></td><td class="n">(see 4)</td><td>B, <code>dc4779e</code>, <code>45db5aa</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/queue_service.py</code> &middot; <code>_run_job</code></td><td class="n">(see 3)</td><td>C, <code>69b0a8f</code></td></tr>
+        <tr class="ctx"><td class="fn"><code>engine.py</code> <code>diarize</code>; <code>outputs.py</code> <code>assign_word_speakers</code> (context)</td><td class="n"></td><td></td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>Two children, not one: Whisper is freed before pyannote loads, so the GPU never holds both</li>
+      <li>Pausing between the phases puts the job back in the queue with its raw checkpoint</li>
+      <li>The old CLI path (<code>transcribe.py</code>) still runs both steps in one process: expect the question</li>
+    </ul></div>
+  </section>
+
+  <div class="arrow"><span>↓</span></div>
+
+  <!-- 6 -->
+  <section class="step">
+    <div class="head"><div class="num">6</div><h2>Outputs</h2>
+      <div class="out">out: archive folder <code>&lt;file_id&gt;/</code></div></div>
+    <div class="body">
+      <div class="what"><ol>
+        <li>Pick a free <code>file_id</code></li>
+        <li>Write log, metadata, txt, srt, json into a fresh temp directory</li>
+        <li>Optional copy to the export folder</li>
+        <li><code>publish</code>: move into the archive</li>
+        <li>Send <code>JobDone</code>; status DONE, work folder and staged upload deleted</li>
+      </ol></div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn core"><code>aTrain_core/runner.py</code> &middot; <code>_write_outputs</code></td><td class="n">(see 4)</td><td>B</td></tr>
+        <tr><td class="fn core"><code>aTrain_core/outputs.py</code><span class="tag chg">CHG</span><br><code>free_file_id</code>, <code>fresh_output_dir</code>, <code>publish</code></td><td class="n">+74 −45</td><td><code>64da3a1</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/queue_service.py</code> &middot; <code>_on_event</code></td><td class="n">(see 3)</td><td>C</td></tr>
+        <tr><td class="fn gui"><code>aTrain/components/queue_status.py</code><span class="tag new">NEW</span></td><td class="n">+360</td><td><code>9cf9558</code>, <code>ccf74b2</code>, <code>45db5aa</code></td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li><code>publish</code> is last, so the archive never holds a half-written result</li>
+      <li>A failed export copy is a warning on the job, never an error</li>
+      <li>The work folder goes only after DONE is saved: until then the checkpoints are the recovery data</li>
+      <li>Signature change (file_id → directory) explains the −45 in <code>outputs.py</code></li>
+    </ul></div>
+  </section>
+
+  <div class="arrow"><span>↓</span>and when it doesn't just finish</div>
+
+  <!-- 7 -->
+  <section class="step">
+    <div class="head"><div class="num">7</div><h2>Failure, cancel, pause, crash, retry</h2>
+      <div class="out">every path ends in a saved status</div></div>
+    <div class="body">
+      <div class="what">
+        <ul>
+          <li>Child fails: <code>JobFailed</code></li>
+          <li>Child crashes or runs out of memory: <code>PhaseDied</code>, FAILED</li>
+          <li>Cancel: kill the child, CANCELLED</li>
+          <li>Pause: the phase finishes, the job goes back in the queue</li>
+          <li>App closed or killed: RUNNING becomes QUEUED at the next start</li>
+          <li>Retry: end of the queue, checkpoints reused</li>
+        </ul>
+        <div class="states"><span class="st">QUEUED</span>→<span class="st">RUNNING</span>→
+          <span class="st">DONE</span><span class="st">FAILED</span><span class="st">CANCELLED</span></div>
+      </div>
+      <div class="files"><table>
+        <tr><th>File</th><th class="n">Lines</th><th>Commits</th></tr>
+        <tr><td class="fn core"><code>aTrain_core/queue_service.py</code><br><code>_phase_died</code>, <code>_fail</code>, <code>cancel</code>, <code>retry</code>, <code>start()</code> recovery</td><td class="n">(see 3)</td><td>C, <code>dc4779e</code>, <code>ccf74b2</code>, <code>69b0a8f</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/runner.py</code><br><code>PhaseHandle.events</code>, parent watchdog</td><td class="n">(see 4)</td><td>B, <code>dc4779e</code></td></tr>
+        <tr><td class="fn core"><code>aTrain_core/jobs.py</code> &middot; <code>JobStatus</code>, <code>JobState</code></td><td class="n">(see 2)</td><td>A, <code>ccf74b2</code></td></tr>
+        <tr><td class="fn gui"><code>aTrain/components/queue_status.py</code> &middot; buttons, error text</td><td class="n">(see 6)</td><td><code>9cf9558</code>, <code>ccf74b2</code></td></tr>
+        <tr><td class="fn"><code>tests/unit/</code> <code>test_queue_service.py</code>, <code>test_runner.py</code>, <code>test_runner_process.py</code>, <code>test_queue_lock.py</code></td><td class="n"></td><td></td></tr>
+      </table></div>
+    </div>
+    <div class="review"><b>Review</b><ul>
+      <li>Start with <code>ccf74b2</code> ("failed saves, cancelling and uploads")</li>
+      <li>Cancel kills only the child it captured, even if the scheduler has moved on; events sent before the kill are still applied, so a job that just finished stays DONE</li>
+      <li>If even the FAILED status can't be saved (disk full), the queue pauses instead of looping</li>
+    </ul></div>
+  </section>
+</main>
+</body>
+</html>
