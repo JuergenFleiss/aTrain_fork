@@ -1,5 +1,7 @@
 # MLX Whisper candidate evidence
 
+[Apple hardware acceleration tests](apple-hardware-acceleration-tests.md)
+
 Evidence retrieved 23 October 2026. This is an isolated feasibility experiment
 after whisper.cpp failed the timestamp checks. It does not select a production
 backend, approve timestamp quality, or change the application dependencies.

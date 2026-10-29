@@ -40,3 +40,6 @@ standalone executable, and the branching/release model live in
 
 - [Adding a model](adding-a-model.md) — mirroring a model under aTrain-core,
   its entry in `models.json`, pinned hashes and licence.
+
+- [Apple hardware acceleration tests](apple-hardware-acceleration-tests.md) —
+  whisper.cpp and MLX experiments, timestamp checks, VAD comparisons and saved results.

@@ -1,5 +1,7 @@
 # whisper.cpp helper evaluation
 
+[Apple hardware acceleration tests](apple-hardware-acceleration-tests.md)
+
 Status: source investigation and Linux CPU feasibility experiments, 23 October 2026.
 Production integration is blocked pending the correctness experiment in
 the integration plan. The CPU timestamp experiment below does not establish timing accuracy or

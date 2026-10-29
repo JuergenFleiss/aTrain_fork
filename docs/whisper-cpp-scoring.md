@@ -1,5 +1,7 @@
 # whisper.cpp fixture and scoring protocol
 
+[Apple hardware acceleration tests](apple-hardware-acceleration-tests.md)
+
 This document fixes the comparison rules for the feasibility experiment before
 any whisper.cpp output is scored. The inventory is in
 [`tests/fixtures/whisper_cpp/manifest.yaml`](../tests/fixtures/whisper_cpp/manifest.yaml).

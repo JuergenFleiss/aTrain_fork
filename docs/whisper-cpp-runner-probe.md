@@ -1,5 +1,7 @@
 # whisper.cpp GitHub macOS runner probe
 
+[Apple hardware acceleration tests](apple-hardware-acceleration-tests.md)
+
 Status: CPU inference, Metal compute and Metal inference **passed** on
 23 October 2026 in [run 39921131494](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39921131494)
 at commit `f1c87a2`. [Logs and structured results](https://github.com/JuergenFleiss/aTrain_fork/actions/runs/39921131494/artifacts/12486679257)
